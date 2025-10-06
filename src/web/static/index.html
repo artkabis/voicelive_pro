@@ -1,0 +1,2330 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>VoiceLive Pro - Optimisé</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+        .pulse-animation { animation: pulse 1s infinite; }
+        
+        input[type="range"] { -webkit-appearance: none; appearance: none; background: transparent; width: 100%; }
+        input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; height: 20px; width: 20px; border-radius: 50%; background: #3b82f6; cursor: pointer; margin-top: -8px; }
+        input[type="range"]::-webkit-slider-runnable-track { height: 4px; background: #374151; border-radius: 2px; }
+        input[type="range"]::-moz-range-thumb { height: 20px; width: 20px; border-radius: 50%; background: #3b82f6; cursor: pointer; border: none; }
+        input[type="range"]::-moz-range-track { height: 4px; background: #374151; border-radius: 2px; }
+        
+        .timeline-slider::-webkit-slider-thumb { height: 24px; width: 24px; margin-top: -10px; }
+        .timeline-slider::-webkit-slider-runnable-track { height: 6px; }
+        .timeline-slider::-moz-range-thumb { height: 24px; width: 24px; }
+        .timeline-slider::-moz-range-track { height: 6px; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+    
+    <script type="text/babel" data-type="module">
+        const { useState, useEffect, useRef, useCallback, memo } = React;
+        
+        // Icônes SVG
+        const PlayIcon = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>);
+        const PauseIcon = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16"></rect><rect x="14" y="4" width="4" height="16"></rect></svg>);
+        const StopIcon = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="6" width="12" height="12"></rect></svg>);
+        const VolumeIcon = () => (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path></svg>);
+        const MuteIcon = () => (<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon><line x1="23" y1="9" x2="17" y2="15"></line><line x1="17" y1="9" x2="23" y2="15"></line></svg>);
+        const SquareIcon = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="6" y="6" width="12" height="12"></rect></svg>);
+        const CircleIcon = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"></circle></svg>);
+        const SettingsIcon = () => (<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="3"></circle><path d="M12 1v6m0 6v6m-9-9h6m6 0h6"></path></svg>);
+
+        const formatTime = (seconds) => {
+            const mins = Math.floor(seconds / 60);
+            const secs = Math.floor(seconds % 60);
+            return `${mins}:${secs.toString().padStart(2, '0')}`;
+        };
+
+        // COMPOSANT LevelMeter optimisé avec memo
+        const LevelMeter = memo(({ level, label }) => (
+            <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-400 w-12 font-mono">{label}</span>
+                <div className="flex-1 h-6 bg-gray-800 rounded overflow-hidden relative border border-gray-700">
+                    <div className={`h-full transition-all duration-75 ${level > 90 ? 'bg-red-500' : level > 70 ? 'bg-yellow-500' : 'bg-green-500'}`} style={{ width: `${Math.min(level, 100)}%` }} />
+                    <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-xs font-mono text-white drop-shadow font-bold">{level.toFixed(0)}%</span>
+                    </div>
+                </div>
+            </div>
+        ));
+
+        // COMPOSANT EffectPanel optimisé avec memo
+        const EffectPanel = memo(({ name, title, enabled, parameters, onToggle, onParameterChange }) => {
+            const handleToggle = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onToggle(name);
+            }, [name, onToggle]);
+            
+            return (
+                <div className={`bg-gray-800 rounded-lg p-4 border-2 transition-all ${enabled ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-gray-700'}`}>
+                    <div className="flex items-center justify-between mb-3">
+                        <h3 className="font-semibold text-white pointer-events-none">{title}</h3>
+                        <button 
+                            type="button"
+                            onMouseDown={handleToggle} 
+                            className={`px-4 py-1.5 rounded text-sm font-medium transition-all ${enabled ? 'bg-blue-500 text-white hover:bg-blue-600 shadow-lg' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                        >
+                            <span className="pointer-events-none">{enabled ? 'ON' : 'OFF'}</span>
+                        </button>
+                    </div>
+                    {enabled && (
+                        <div className="space-y-3">
+                            {Object.entries(parameters).map(([key, value]) => {
+                                if (key === 'enabled') return null;
+                                return (
+                                    <div key={key} className="space-y-1">
+                                        <div className="flex justify-between text-xs">
+                                            <span className="text-gray-400 capitalize">{key.replace('_', ' ')}</span>
+                                            <span className="text-white font-mono font-bold">{value.toFixed(2)}</span>
+                                        </div>
+                                        <input 
+                                            type="range" 
+                                            min="0" 
+                                            max="1" 
+                                            step="0.01" 
+                                            value={value} 
+                                            onChange={(e) => onParameterChange(name, key, e.target.value)} 
+                                            className="w-full" 
+                                        />
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
+                </div>
+            );
+        });
+
+        // COMPOSANT TrackPanel optimisé avec memo et comparaison personnalisée
+        const TrackPanel = memo(({ index, state, isActive, onSelectTrack, onCommand }) => {
+
+            const fileInputRef = useRef(null);
+            const [showEditor, setShowEditor] = useState(false); 
+            const progress = state.duration > 0 ? (state.current_time / state.duration) * 100 : 0;
+            
+            // État local pour le gain
+            const [localGain, setLocalGain] = useState(state.gain);
+            
+            // Synchroniser avec le state du serveur
+            useEffect(() => {
+                setLocalGain(state.gain);
+            }, [state.gain]);
+            
+            // ========== TOUS LES HANDLERS DÉFINIS ICI ==========
+            const handleTrackSelect = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onSelectTrack(index);
+            }, [index, onSelectTrack]);
+            
+            const handleImportAudio = useCallback(async (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                const formData = new FormData();
+                formData.append('file', file);
+                formData.append('track', index);
+                
+                try {
+                    const response = await fetch('http://localhost:5000/api/upload_audio', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    const result = await response.json();
+                    if (!response.ok) {
+                        throw new Error(result.error || 'Erreur upload');
+                    }
+                    
+                    console.log(`✅ Fichier importé dans piste ${index + 1}:`, file.name);
+                } catch (error) {
+                    console.error('Erreur import:', error);
+                    alert('Erreur import: ' + error.message);
+                }
+            }, [index]);
+            
+            const handleMuteToggle = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onCommand('toggle_track_mute', index);
+            }, [index, onCommand]);
+            
+            const handleSeek = useCallback((e) => {
+                if (state.duration > 0) {
+                    const newPosition = parseFloat(e.target.value);
+                    onCommand('seek_track', index, newPosition);
+                }
+            }, [state.duration, index, onCommand]);
+            
+            const handleGainChange = useCallback((e) => {
+                const newGain = parseFloat(e.target.value);
+                setLocalGain(newGain);
+                onCommand('set_track_gain', index, null, newGain);
+            }, [index, onCommand]);
+            
+            const handlePlay = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onCommand('play_track', index);
+            }, [index, onCommand]);
+            
+            const handlePause = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onCommand('pause_track', index);
+            }, [index, onCommand]);
+            
+            const handleStop = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onCommand('stop_track', index);
+            }, [index, onCommand]);
+            
+            const handleClear = useCallback((e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onCommand('clear_track', index);
+            }, [index, onCommand]);
+            
+            // ========== UN SEUL RETURN AVEC LE JSX COMPLET ==========
+            return (
+                <div className={`bg-gray-800 rounded-lg p-4 border-2 transition-all hover:shadow-lg ${isActive ? 'border-blue-500 shadow-lg shadow-blue-500/20' : 'border-gray-700 hover:border-gray-600'}`}>
+                    <div onMouseDown={handleTrackSelect} className="cursor-pointer mb-3 select-none">
+                        <div className="flex items-center justify-between">
+                            <h3 className="font-semibold text-white pointer-events-none">Piste {index + 1}</h3>
+                            <div className="flex items-center gap-2 pointer-events-none">
+                                {isActive && <span className="text-blue-400 text-sm font-bold">👉</span>}
+                                <button
+                                    type="button"
+                                    onMouseDown={handleMuteToggle}
+                                    className={`p-1.5 rounded transition-colors pointer-events-auto ${state.muted ? 'bg-red-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                                    title={state.muted ? 'Unmute' : 'Mute'}
+                                >
+                                    <span className="pointer-events-none flex items-center justify-center">
+                                        {state.muted ? <MuteIcon /> : <VolumeIcon />}
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    {state.duration > 0 && (
+                        <div className="mb-3">
+                            <div className="flex justify-between text-xs text-gray-400 mb-1">
+                                <span className="font-mono">{formatTime(state.current_time || 0)}</span>
+                                <span className="font-mono">{formatTime(state.duration)}</span>
+                            </div>
+                            {/* ✅ NOUVELLE VISUALISATION WAVEFORM */}
+                            <MiniWaveform
+                                trackIndex={index}
+                                duration={state.duration}
+                                currentTime={state.current_time || 0}
+                                onSeek={(newTime) => onCommand('seek_track', index, newTime)}
+                            />
+                        </div>
+                    )}
+                    
+                    <div className="flex gap-2 flex-wrap text-xs mb-3">
+                        {state.recording && <span className="px-2 py-1 bg-red-500 rounded text-white font-bold pulse-animation">🔴 REC</span>}
+                        {state.playing && !state.paused && <span className="px-2 py-1 bg-green-500 rounded text-white font-bold">▶️ PLAY</span>}
+                        {state.paused && <span className="px-2 py-1 bg-yellow-500 rounded text-white font-bold">⏸️ PAUSE</span>}
+                        {state.overdubbing && <span className="px-2 py-1 bg-orange-500 rounded text-white font-bold pulse-animation">🟠 OVER</span>}
+                        {state.muted && <span className="px-2 py-1 bg-red-700 rounded text-white font-bold">🔇 MUTE</span>}
+                        {!state.recording && !state.playing && !state.paused && !state.overdubbing && state.duration === 0 && <span className="px-2 py-1 bg-gray-700 rounded text-gray-500">⚪ Vide</span>}
+                    </div>
+                    
+                    <div className="mb-3 bg-gray-900/50 rounded p-2">
+                        <div className="flex justify-between text-xs text-gray-400 mb-1">
+                            <span className="flex items-center gap-1"><VolumeIcon /> Volume</span>
+                            <span className="font-mono font-bold text-white">{Math.round(localGain * 100)}%</span>
+                        </div>
+                        <input
+                            type="range"
+                            min="0"
+                            max="2"
+                            step="0.01"
+                            value={localGain}
+                            onChange={handleGainChange}
+                            className="w-full"
+                        />
+                    </div>
+                    {/* ✅ NOUVEAU : AJOUTER ICI, JUSTE APRÈS LE VOLUME */}
+                    <div className="mb-3 bg-gray-900/50 rounded p-2">
+                        <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={state.loop_on_export !== false}
+                                onChange={() => onCommand('toggle_track_loop_export', index)}
+                                className="w-4 h-4"
+                            />
+                            <span className="text-sm text-white">🔁 Loop à l'export</span>
+                        </label>
+                        <p className="text-xs text-gray-500 mt-1">
+                            Répète cette piste en boucle lors de l'export
+                        </p>
+                    </div>
+                    
+                    <div className="grid grid-cols-4 gap-2 mb-3">
+                        <button
+                            type="button"
+                            onMouseDown={handlePlay}
+                            disabled={state.duration === 0 || state.recording}
+                            className={`p-2 rounded transition-colors flex items-center justify-center ${
+                                state.playing && !state.paused 
+                                    ? 'bg-green-600 text-white' 
+                                    : 'bg-gray-700 hover:bg-gray-600 text-white disabled:bg-gray-800 disabled:text-gray-600'
+                            }`}
+                            title="Play"
+                        >
+                            <span className="pointer-events-none"><PlayIcon /></span>
+                        </button>
+                        
+                        <button
+                            type="button"
+                            onMouseDown={handlePause}
+                            disabled={state.duration === 0 || state.recording || !state.playing}
+                            className={`p-2 rounded transition-colors flex items-center justify-center ${
+                                state.paused 
+                                    ? 'bg-yellow-600 text-white' 
+                                    : 'bg-gray-700 hover:bg-gray-600 text-white disabled:bg-gray-800 disabled:text-gray-600'
+                            }`}
+                            title="Pause"
+                        >
+                            <span className="pointer-events-none"><PauseIcon /></span>
+                        </button>
+                        
+                        <button
+                            type="button"
+                            onMouseDown={handleStop}
+                            disabled={state.duration === 0 || state.recording}
+                            className="p-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded transition-colors flex items-center justify-center"
+                            title="Stop"
+                        >
+                            <span className="pointer-events-none"><StopIcon /></span>
+                        </button>
+                        
+                        <button
+                            type="button"
+                            onMouseDown={handleClear}
+                            disabled={state.duration === 0}
+                            className="p-2 bg-red-600 hover:bg-red-700 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded transition-colors text-xs font-medium"
+                            title="Clear"
+                        >
+                            <span className="pointer-events-none">🗑️</span>
+                        </button>
+                    </div>
+                    
+                    {/* Boutons d'import et édition */}
+                    <div className="grid grid-cols-2 gap-2">
+                        <div>
+                            <input
+                                ref={fileInputRef}
+                                type="file"
+                                accept=".wav,.flac"
+                                onChange={handleImportAudio}
+                                className="hidden"
+                            />
+                            <button
+                                type="button"
+                                onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    fileInputRef.current?.click();
+                                }}
+                                className="w-full p-2 bg-purple-600 hover:bg-purple-700 text-white rounded transition-colors text-sm font-medium flex items-center justify-center gap-2"
+                            >
+                                <span className="pointer-events-none">📁 Import</span>
+                            </button>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setShowEditor(true)}
+                            disabled={state.duration === 0}
+                            className="w-full p-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded transition-colors text-sm font-medium"
+                        >
+                            ✂️ Éditer
+                        </button>
+                    </div>
+
+                    {showEditor && (
+                        <WaveformEditor
+                            track={state}
+                            trackIndex={index}
+                            onClose={() => setShowEditor(false)}
+                            onApply={() => setShowEditor(false)}
+                        />
+                    )}
+                </div>
+            );
+        }, (prevProps, nextProps) => {
+            const prevState = prevProps.state;
+            const nextState = nextProps.state;
+            
+            const timeDiff = Math.abs((prevState.current_time || 0) - (nextState.current_time || 0));
+            const shouldSkipTimeUpdate = timeDiff < 0.1;
+            
+            return (
+                prevProps.index === nextProps.index &&
+                prevProps.isActive === nextProps.isActive &&
+                prevState.recording === nextState.recording &&
+                prevState.playing === nextState.playing &&
+                prevState.paused === nextState.paused &&
+                prevState.overdubbing === nextState.overdubbing &&
+                prevState.muted === nextState.muted &&
+                prevState.duration === nextState.duration &&
+                Math.abs(prevState.gain - nextState.gain) < 0.01 &&
+                shouldSkipTimeUpdate
+            );
+        });
+        const MiniWaveform = memo(({ trackIndex, duration, currentTime, onSeek }) => {
+            const canvasRef = useRef(null);
+            const [waveformData, setWaveformData] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
+            
+            // ✅ useCallback pour éviter de recréer la fonction
+            const loadWaveform = useCallback(async () => {
+                try {
+                    setIsLoading(true);
+                    const response = await fetch(`http://localhost:5000/api/waveform/${trackIndex}?samples_per_pixel=256`);
+                    const data = await response.json();
+                    setWaveformData(data.waveform);
+                    setIsLoading(false);
+                } catch (error) {
+                    console.error('Erreur chargement waveform:', error);
+                    setIsLoading(false);
+                }
+            }, [trackIndex]);
+            
+            // Charger la waveform seulement si duration change
+            useEffect(() => {
+                if (duration > 0) {
+                    loadWaveform();
+                } else {
+                    setWaveformData([]);
+                    setIsLoading(false);
+                }
+            }, [duration, loadWaveform]);
+            
+            // ✅ useCallback pour drawWaveform
+            const drawWaveform = useCallback(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                
+                const ctx = canvas.getContext('2d');
+                const width = canvas.width;
+                const height = canvas.height;
+                const centerY = height / 2;
+                
+                // Fond
+                ctx.fillStyle = '#1f2937';
+                ctx.fillRect(0, 0, width, height);
+                
+                const pixelWidth = width / waveformData.length;
+                const progress = duration > 0 ? currentTime / duration : 0;
+                
+                // Dessiner la waveform
+                waveformData.forEach((point, i) => {
+                    const x = i * pixelWidth;
+                    const minY = centerY - (point.min * centerY * 0.9);
+                    const maxY = centerY - (point.max * centerY * 0.9);
+                    const h = maxY - minY;
+                    
+                    // Couleur : bleu pour la partie jouée, gris pour le reste
+                    const pixelProgress = i / waveformData.length;
+                    ctx.fillStyle = pixelProgress <= progress ? '#3b82f6' : '#4b5563';
+                    ctx.fillRect(x, minY, Math.max(pixelWidth, 1), h || 1);
+                });
+                
+                // Ligne de position actuelle
+                const posX = progress * width;
+                ctx.strokeStyle = '#ef4444';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(posX, 0);
+                ctx.lineTo(posX, height);
+                ctx.stroke();
+            }, [waveformData, duration, currentTime]);
+            
+            // Dessiner seulement quand nécessaire
+            useEffect(() => {
+                if (waveformData.length > 0 && canvasRef.current) {
+                    drawWaveform();
+                }
+            }, [waveformData, drawWaveform]);
+            
+            const handleClick = useCallback((e) => {
+                if (duration === 0 || !canvasRef.current) return;
+                
+                const rect = canvasRef.current.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const clickProgress = x / rect.width;
+                const newTime = clickProgress * duration;
+                
+                onSeek(newTime);
+            }, [duration, onSeek]);
+            
+            if (duration === 0) {
+                return (
+                    <div className="h-16 bg-gray-900/50 rounded flex items-center justify-center border border-gray-700">
+                        <span className="text-xs text-gray-500">Pas d'audio</span>
+                    </div>
+                );
+            }
+            
+            if (isLoading) {
+                return (
+                    <div className="h-16 bg-gray-900/50 rounded flex items-center justify-center border border-gray-700">
+                        <span className="text-xs text-gray-400">Chargement...</span>
+                    </div>
+                );
+            }
+            
+            return (
+                <div className="relative">
+                    <canvas
+                        ref={canvasRef}
+                        width={400}
+                        height={64}
+                        onClick={handleClick}
+                        className="w-full h-16 rounded cursor-pointer border border-gray-700 hover:border-blue-500 transition-colors"
+                        style={{ display: 'block' }}
+                    />
+                </div>
+            );
+        }, (prevProps, nextProps) => {
+            // ✅ Fonction de comparaison personnalisée
+            // Ne re-render que si vraiment nécessaire
+            const timeDiff = Math.abs(prevProps.currentTime - nextProps.currentTime);
+            
+            return (
+                prevProps.trackIndex === nextProps.trackIndex &&
+                prevProps.duration === nextProps.duration &&
+                timeDiff < 0.1  // Éviter de redessiner pour des micro-changements
+            );
+        });
+        const WaveformEditor = memo(({ track, trackIndex, onClose, onApply }) => {
+            const canvasRef = useRef(null);
+            const [waveformData, setWaveformData] = useState([]);
+            const [duration, setDuration] = useState(0);
+            const [startTime, setStartTime] = useState(0);
+            const [endTime, setEndTime] = useState(0);
+            const [isPlaying, setIsPlaying] = useState(false);
+            const audioRef = useRef(null);
+            
+            useEffect(() => {
+                loadWaveform();
+            }, [trackIndex]);
+            
+            const loadWaveform = async () => {
+                try {
+                    const response = await fetch(`http://localhost:5000/api/waveform/${trackIndex}?samples_per_pixel=512`);
+                    const data = await response.json();
+                    setWaveformData(data.waveform);
+                    setDuration(data.duration);
+                    setEndTime(data.duration);
+                    drawWaveform(data.waveform, data.duration);
+                } catch (error) {
+                    console.error('Erreur chargement waveform:', error);
+                }
+            };
+            
+            const drawWaveform = (waveform, dur) => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                
+                const ctx = canvas.getContext('2d');
+                const width = canvas.width;
+                const height = canvas.height;
+                const centerY = height / 2;
+                
+                ctx.fillStyle = '#1f2937';
+                ctx.fillRect(0, 0, width, height);
+                
+                const pixelWidth = width / waveform.length;
+                
+                // Dessiner la forme d'onde
+                ctx.fillStyle = '#3b82f6';
+                waveform.forEach((point, i) => {
+                    const x = i * pixelWidth;
+                    const minY = centerY - (point.min * centerY);
+                    const maxY = centerY - (point.max * centerY);
+                    const h = maxY - minY;
+                    ctx.fillRect(x, minY, pixelWidth, h);
+                });
+                
+                // Zones de trim (semi-transparentes)
+                const startX = (startTime / dur) * width;
+                const endX = (endTime / dur) * width;
+                
+                ctx.fillStyle = 'rgba(239, 68, 68, 0.3)';
+                ctx.fillRect(0, 0, startX, height); // Zone début à supprimer
+                ctx.fillRect(endX, 0, width - endX, height); // Zone fin à supprimer
+                
+                // Lignes de délimitation
+                ctx.strokeStyle = '#ef4444';
+                ctx.lineWidth = 2;
+                ctx.beginPath();
+                ctx.moveTo(startX, 0);
+                ctx.lineTo(startX, height);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(endX, 0);
+                ctx.lineTo(endX, height);
+                ctx.stroke();
+            };
+            
+            useEffect(() => {
+                if (waveformData.length > 0) {
+                    drawWaveform(waveformData, duration);
+                }
+            }, [startTime, endTime, waveformData]);
+            
+            const handleCanvasClick = (e) => {
+                const canvas = canvasRef.current;
+                const rect = canvas.getBoundingClientRect();
+                const x = e.clientX - rect.left;
+                const clickTime = (x / canvas.width) * duration;
+                
+                // Clic plus proche du début ou de la fin?
+                const distToStart = Math.abs(clickTime - startTime);
+                const distToEnd = Math.abs(clickTime - endTime);
+                
+                if (distToStart < distToEnd) {
+                    setStartTime(Math.max(0, Math.min(clickTime, endTime - 0.1)));
+                } else {
+                    setEndTime(Math.max(startTime + 0.1, Math.min(clickTime, duration)));
+                }
+            };
+            
+            const handlePreview = async () => {
+                try {
+                    const response = await fetch(`http://localhost:5000/api/preview_trim/${trackIndex}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ start_time: startTime, end_time: endTime })
+                    });
+                    
+                    const blob = await response.blob();
+                    const url = URL.createObjectURL(blob);
+                    
+                    if (audioRef.current) {
+                        audioRef.current.src = url;
+                        audioRef.current.play();
+                        setIsPlaying(true);
+                    }
+                } catch (error) {
+                    console.error('Erreur preview:', error);
+                }
+            };
+            
+            const handleApply = () => {
+                window.voiceLiveSocket.current.emit('trim_track', {
+                    track: trackIndex,
+                    start_time: startTime,
+                    end_time: endTime
+                });
+                onApply();
+            };
+            
+            return (
+                <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
+                    <div className="bg-gray-800 rounded-xl p-6 max-w-4xl w-full border border-gray-700">
+                        <div className="flex justify-between items-center mb-4">
+                            <h2 className="text-xl font-bold text-white">
+                                Éditeur - Piste {trackIndex + 1}
+                            </h2>
+                            <button onClick={onClose} className="text-gray-400 hover:text-white">✕</button>
+                        </div>
+                        
+                        <canvas
+                            ref={canvasRef}
+                            width={800}
+                            height={200}
+                            onClick={handleCanvasClick}
+                            className="w-full border border-gray-600 rounded cursor-crosshair mb-4"
+                        />
+                        
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label className="text-sm text-gray-400">Début (s)</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={startTime.toFixed(2)}
+                                    onChange={(e) => setStartTime(parseFloat(e.target.value))}
+                                    className="w-full bg-gray-700 text-white rounded px-3 py-2"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-sm text-gray-400">Fin (s)</label>
+                                <input
+                                    type="number"
+                                    step="0.01"
+                                    value={endTime.toFixed(2)}
+                                    onChange={(e) => setEndTime(parseFloat(e.target.value))}
+                                    className="w-full bg-gray-700 text-white rounded px-3 py-2"
+                                />
+                            </div>
+                        </div>
+                        
+                        <div className="text-sm text-gray-400 mb-4">
+                            Durée finale: {(endTime - startTime).toFixed(2)}s (original: {duration.toFixed(2)}s)
+                        </div>
+                        
+                        <audio ref={audioRef} onEnded={() => setIsPlaying(false)} className="hidden" />
+                        
+                        <div className="flex gap-3">
+                            <button
+                                onClick={handlePreview}
+                                className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-medium"
+                            >
+                                {isPlaying ? '🔊 Lecture...' : '▶️ Prévisualiser'}
+                            </button>
+                            <button
+                                onClick={handleApply}
+                                className="flex-1 bg-green-600 hover:bg-green-700 text-white py-3 rounded-lg font-medium"
+                            >
+                                ✂️ Appliquer le découpage
+                            </button>
+                            <button
+                                onClick={onClose}
+                                className="px-6 bg-gray-700 hover:bg-gray-600 text-white py-3 rounded-lg"
+                            >
+                                Annuler
+                            </button>
+                        </div>
+                        
+                        <div className="mt-4 p-3 bg-blue-900/20 border border-blue-700/50 rounded text-xs text-blue-300">
+                            💡 Cliquez sur la forme d'onde pour déplacer les marqueurs de début/fin
+                        </div>
+                    </div>
+                </div>
+            );
+        });
+        
+
+        // COMPOSANT SyncPanel optimisé
+        const SyncPanel = memo(({ syncInfo, looperStates, onCommand }) => {
+            const handleToggleSync = useCallback((e) => {
+                e.preventDefault();
+                onCommand('toggle_sync');
+            }, [onCommand]);
+            
+            const handleResetMaster = useCallback((e) => {
+                e.preventDefault();
+                onCommand('reset_master');
+            }, [onCommand]);
+            
+            return (
+                <div className="p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="text-sm font-bold text-white">Synchronisation</h3>
+                        <div className="flex gap-2">
+                            <button 
+                                type="button"
+                                onMouseDown={handleToggleSync}
+                                className={`px-4 py-2 rounded text-sm font-medium transition-all ${
+                                    syncInfo.sync_mode 
+                                        ? 'bg-green-600 hover:bg-green-700 text-white' 
+                                        : 'bg-gray-700 hover:bg-gray-600 text-gray-300'
+                                }`}
+                            >
+                                <span className="pointer-events-none">
+                                    {syncInfo.sync_mode ? '✓ Auto-Sync' : '✗ Auto-Sync'}
+                                </span>
+                            </button>
+                            
+                            {/* NOUVEAU : Bouton de synchronisation manuelle */}
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { 
+                                    e.preventDefault(); 
+                                    onCommand('sync_positions'); 
+                                }}
+                                disabled={syncInfo.master_track === null}
+                                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 text-white rounded text-sm"
+                            >
+                                <span className="pointer-events-none">🔄 Sync Now</span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    {syncInfo.master_track !== null && (
+                        <div className="mb-4 p-3 bg-blue-900/30 border border-blue-700 rounded">
+                            <div className="text-sm text-blue-300">
+                                Master: <span className="font-bold">Piste {syncInfo.master_track + 1}</span> ({syncInfo.master_duration.toFixed(2)}s)
+                            </div>
+                        </div>
+                    )}
+                    
+                    <div className="space-y-3">
+                        {looperStates.map((state, index) => (
+                            <div key={index} className="bg-gray-800 rounded-lg p-3">
+                                <div className="flex items-center justify-between mb-2">
+                                    <div className="text-sm font-medium text-white">
+                                        Piste {index + 1}
+                                        {index === syncInfo.master_track && <span className="ml-2 text-xs text-blue-400">★ Master</span>}
+                                    </div>
+                                    <div className="text-xs text-gray-400">
+                                        {state.duration > 0 ? `${state.duration.toFixed(2)}s` : 'Vide'}
+                                    </div>
+                                </div>
+                                
+                                {state.duration > 0 && (
+                                    <div className="flex items-center gap-2">
+                                        <button
+                                            type="button"
+                                            onMouseDown={(e) => { e.preventDefault(); onCommand('nudge_track', index, null, null, -50); }}
+                                            className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded transition-colors"
+                                            title="Reculer 50ms"
+                                        >
+                                            <span className="pointer-events-none">←← 50ms</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onMouseDown={(e) => { e.preventDefault(); onCommand('nudge_track', index, null, null, -10); }}
+                                            className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded transition-colors"
+                                            title="Reculer 10ms"
+                                        >
+                                            <span className="pointer-events-none">← 10ms</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onMouseDown={(e) => { e.preventDefault(); onCommand('nudge_track', index, null, null, 10); }}
+                                            className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded transition-colors"
+                                            title="Avancer 10ms"
+                                        >
+                                            <span className="pointer-events-none">10ms →</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onMouseDown={(e) => { e.preventDefault(); onCommand('nudge_track', index, null, null, 50); }}
+                                            className="flex-1 px-3 py-2 bg-gray-700 hover:bg-gray-600 text-white text-sm rounded transition-colors"
+                                            title="Avancer 50ms"
+                                        >
+                                            <span className="pointer-events-none">50ms →→</span>
+                                        </button>
+                                    </div>
+                                )}
+                            </div>
+                        ))}
+                    </div>
+                    
+                    <button
+                        type="button"
+                        onMouseDown={handleResetMaster}
+                        className="w-full mt-4 px-4 py-2 bg-red-700 hover:bg-red-800 text-white text-sm rounded transition-colors"
+                    >
+                        <span className="pointer-events-none">🔄 Réinitialiser Master</span>
+                    </button>
+                  <div className="mt-4 p-3 bg-blue-900/20 border border-blue-700/50 rounded text-xs">
+                        <div className="font-bold text-blue-300 mb-2">Mode de synchronisation :</div>
+                        <ul className="space-y-1 text-blue-200">
+                            <li>• Quantification automatique (1x, 2x, 4x, 1/2, 1/4)</li>
+                            <li>• Correction si écart &lt; 10%</li>
+                            <li>• "Sync Now" aligne les positions de lecture</li>
+                        </ul>
+                    </div>
+                </div>
+                
+            );
+        });
+        // ========== COMPOSANTS PHASE 1 ==========
+
+        // COMPOSANT MetronomePanel
+        const MetronomePanel = memo(({ metronomeState, onCommand, onParamChange }) => {
+            const [tapTimes, setTapTimes] = useState([]);
+            
+            const handleTapTempo = useCallback(() => {
+                const now = Date.now() / 1000;
+                const newTaps = [...tapTimes, now].slice(-4);
+                setTapTimes(newTaps);
+                
+                if (newTaps.length >= 2) {
+                    onCommand('tap_tempo', null, null, null, null, newTaps);
+                }
+                
+                setTimeout(() => {
+                    setTapTimes(prev => {
+                        if (prev.length > 0 && Date.now() / 1000 - prev[prev.length - 1] > 3) {
+                            return [];
+                        }
+                        return prev;
+                    });
+                }, 3000);
+            }, [tapTimes, onCommand]);
+            
+            return (
+                <div className={`bg-gray-800 rounded-lg p-4 border-2 transition-all ${
+                    metronomeState.is_running 
+                        ? 'border-blue-500 shadow-lg shadow-blue-500/20' 
+                        : 'border-gray-700'
+                }`}>
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="font-bold text-white flex items-center gap-2">
+                            <span className={metronomeState.is_running ? 'pulse-animation' : ''}>🎵</span> 
+                            Métronome
+                        </h3>
+                        <div className="flex gap-2">
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); onCommand('toggle_metronome'); }}
+                                className={`px-4 py-1.5 rounded text-sm font-medium transition-all ${
+                                    metronomeState.enabled 
+                                        ? 'bg-blue-500 text-white hover:bg-blue-600' 
+                                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                                }`}
+                            >
+                                <span className="pointer-events-none">{metronomeState.enabled ? 'ON' : 'OFF'}</span>
+                            </button>
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { 
+                                    e.preventDefault(); 
+                                    onCommand(metronomeState.is_running ? 'stop_metronome' : 'start_metronome'); 
+                                }}
+                                className={`px-4 py-1.5 rounded text-sm font-medium transition-all ${
+                                    metronomeState.is_running
+                                        ? 'bg-red-500 text-white hover:bg-red-600'
+                                        : 'bg-green-500 text-white hover:bg-green-600'
+                                }`}
+                            >
+                                <span className="pointer-events-none">
+                                    {metronomeState.is_running ? '⏹ Stop' : '▶ Start'}
+                                </span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    {metronomeState.is_running && (
+                        <div className="mb-4 p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+                            <div className="flex items-center justify-center gap-4">
+                                <div className="text-center">
+                                    <div className="text-xs text-gray-400 mb-1">Bar</div>
+                                    <div className="text-3xl font-bold font-mono text-blue-400">
+                                        {metronomeState.current_bar || 1}
+                                    </div>
+                                </div>
+                                <div className="text-4xl text-gray-600">|</div>
+                                <div className="text-center">
+                                    <div className="text-xs text-gray-400 mb-1">Beat</div>
+                                    <div className="text-3xl font-bold font-mono text-green-400">
+                                        {metronomeState.current_beat || 1}
+                                    </div>
+                                </div>
+                            </div>
+                            
+                            {metronomeState.is_pre_counting && (
+                                <div className="mt-3 text-center">
+                                    <div className="text-sm text-orange-400 font-bold pulse-animation">
+                                        PRÉ-COUNT: {metronomeState.pre_count_remaining} mesure(s) restante(s)
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+                    
+                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                        <div className="space-y-1">
+                            <div className="flex justify-between text-xs">
+                                <span className="text-gray-400">Tempo (BPM)</span>
+                                <span className="text-white font-mono font-bold text-lg">{metronomeState.bpm?.toFixed(1) || 120}</span>
+                            </div>
+                            <input
+                                type="range"
+                                min="40"
+                                max="300"
+                                step="1"
+                                value={metronomeState.bpm || 120}
+                                onChange={(e) => onParamChange('metronome', 'bpm', parseFloat(e.target.value))}
+                                className="w-full"
+                            />
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); handleTapTempo(); }}
+                                className="w-full mt-2 px-3 py-2 bg-purple-600 hover:bg-purple-700 text-white text-sm rounded transition-colors font-medium"
+                            >
+                                <span className="pointer-events-none">Tap Tempo</span>
+                            </button>
+                        </div>
+                        
+                        <div className="space-y-1">
+                            <div className="text-xs text-gray-400 mb-2">Signature</div>
+                            <div className="flex gap-2 items-center">
+                                <select
+                                    value={metronomeState.time_signature_beats || 4}
+                                    onChange={(e) => onParamChange('metronome', 'time_signature_beats', parseInt(e.target.value))}
+                                    className="flex-1 bg-gray-700 text-white rounded px-2 py-2 text-center font-bold text-lg"
+                                >
+                                    <option value="2">2</option>
+                                    <option value="3">3</option>
+                                    <option value="4">4</option>
+                                    <option value="5">5</option>
+                                    <option value="6">6</option>
+                                    <option value="7">7</option>
+                                </select>
+                                <span className="text-white font-bold text-xl">/</span>
+                                <select
+                                    value={metronomeState.time_signature_note || 4}
+                                    onChange={(e) => onParamChange('metronome', 'time_signature_note', parseInt(e.target.value))}
+                                    className="flex-1 bg-gray-700 text-white rounded px-2 py-2 text-center font-bold text-lg"
+                                >
+                                    <option value="2">2</option>
+                                    <option value="4">4</option>
+                                    <option value="8">8</option>
+                                    <option value="16">16</option>
+                                </select>
+                            </div>
+                        </div>
+                        
+                        <div className="space-y-1">
+                            <div className="flex justify-between text-xs">
+                                <span className="text-gray-400">Volume Click</span>
+                                <span className="text-white font-mono font-bold">{Math.round((metronomeState.volume || 0.5) * 100)}%</span>
+                            </div>
+                            <input
+                                type="range"
+                                min="0"
+                                max="1"
+                                step="0.01"
+                                value={metronomeState.volume || 0.5}
+                                onChange={(e) => onParamChange('metronome', 'volume', parseFloat(e.target.value))}
+                                className="w-full"
+                            />
+                        </div>
+                        
+                        <div className="space-y-1">
+                            <div className="flex justify-between text-xs">
+                                <span className="text-gray-400">Pré-count (mesures)</span>
+                                <span className="text-white font-mono font-bold">{metronomeState.pre_count_bars || 1}</span>
+                            </div>
+                            <input
+                                type="range"
+                                min="0"
+                                max="4"
+                                step="1"
+                                value={metronomeState.pre_count_bars || 1}
+                                onChange={(e) => onParamChange('metronome', 'pre_count_bars', parseInt(e.target.value))}
+                                className="w-full"
+                            />
+                            <div className="text-xs text-gray-500 mt-1">
+                                {metronomeState.pre_count_bars === 0 ? 'Aucun' : `${metronomeState.pre_count_bars} mesure(s)`}
+                            </div>
+                        </div>
+                        
+                        <div className="space-y-1">
+                            <div className="text-xs text-gray-400 mb-2">Options</div>
+                            <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                    type="checkbox"
+                                    checked={metronomeState.accent_first_beat !== false}
+                                    onChange={(e) => onParamChange('metronome', 'accent_first_beat', e.target.checked)}
+                                    className="w-4 h-4"
+                                />
+                                <span className="text-sm text-white">Accent 1er temps</span>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            );
+        });
+
+        const GuitarTunerPanel = memo(({ tunerState, onCommand }) => {
+            // Notes standard guitare folk (accordage standard)
+            const guitarStrings = [
+                { number: 1, name: 'Mi aigu', note: 'E', octave: 4, frequency: 329.63 },
+                { number: 2, name: 'Si', note: 'B', octave: 3, frequency: 246.94 },
+                { number: 3, name: 'Sol', note: 'G', octave: 3, frequency: 196.00 },
+                { number: 4, name: 'Ré', note: 'D', octave: 3, frequency: 146.83 },
+                { number: 5, name: 'La', note: 'A', octave: 2, frequency: 110.00 },
+                { number: 6, name: 'Mi grave', note: 'E', octave: 2, frequency: 82.41 }
+            ];
+            
+            // Détecter quelle corde est jouée
+            const detectString = () => {
+                if (!tunerState.note || !tunerState.frequency) return null;
+                
+                // Trouver la corde la plus proche
+                let closestString = null;
+                let minDiff = Infinity;
+                
+                guitarStrings.forEach(string => {
+                    const diff = Math.abs(tunerState.frequency - string.frequency);
+                    if (diff < minDiff) {
+                        minDiff = diff;
+                        closestString = string;
+                    }
+                });
+                
+                // Accepter si moins de 15% de différence (environ 2 demi-tons)
+                if (closestString && minDiff < closestString.frequency * 0.15) {
+                    return closestString;
+                }
+                
+                return null;
+            };
+            
+            const currentString = detectString();
+            
+            // Composant pour une corde individuelle
+            const StringDisplay = ({ string, isActive, cents }) => {
+                const isTuned = isActive && Math.abs(cents) < 5;
+                const isClose = isActive && Math.abs(cents) < 15;
+                
+                return (
+                    <div className={`relative p-4 rounded-lg transition-all ${
+                        isTuned ? 'bg-green-600 shadow-lg shadow-green-500/50' :
+                        isActive ? 'bg-blue-600 shadow-lg shadow-blue-500/50' :
+                        'bg-gray-700'
+                    }`}>
+                        {/* Numéro de corde */}
+                        <div className="flex items-center justify-between mb-2">
+                            <span className={`text-sm font-bold ${
+                                isActive ? 'text-white' : 'text-gray-400'
+                            }`}>
+                                Corde {string.number}
+                            </span>
+                            {isTuned && (
+                                <span className="text-white text-xl">✓</span>
+                            )}
+                        </div>
+                        
+                        {/* Note cible */}
+                        <div className={`text-4xl font-bold mb-2 ${
+                            isActive ? 'text-white' : 'text-gray-500'
+                        }`}>
+                            {string.note}
+                            <span className="text-xl ml-1">{string.octave}</span>
+                        </div>
+                        
+                        {/* Nom de la corde */}
+                        <div className={`text-xs ${
+                            isActive ? 'text-white/80' : 'text-gray-500'
+                        }`}>
+                            {string.name}
+                        </div>
+                        
+                        {/* Indicateur de désaccord */}
+                        {isActive && !isTuned && (
+                            <div className="mt-3">
+                                <div className="flex justify-between items-center mb-1">
+                                    <span className={`text-xs font-bold ${
+                                        cents < -15 ? 'text-red-300' : 'text-white/50'
+                                    }`}>
+                                        ↓ Grave
+                                    </span>
+                                    <span className="text-white font-mono text-sm">
+                                        {cents > 0 ? '+' : ''}{cents.toFixed(0)}¢
+                                    </span>
+                                    <span className={`text-xs font-bold ${
+                                        cents > 15 ? 'text-red-300' : 'text-white/50'
+                                    }`}>
+                                        Aigu ↑
+                                    </span>
+                                </div>
+                                
+                                {/* Barre de progression */}
+                                <div className="relative h-2 bg-white/20 rounded-full overflow-hidden">
+                                    <div 
+                                        className={`absolute top-0 h-full transition-all ${
+                                            Math.abs(cents) < 5 ? 'bg-green-400' :
+                                            Math.abs(cents) < 15 ? 'bg-yellow-400' :
+                                            'bg-red-400'
+                                        }`}
+                                        style={{
+                                            left: cents < 0 ? `${50 + (cents / 50 * 50)}%` : '50%',
+                                            right: cents > 0 ? `${50 - (cents / 50 * 50)}%` : '50%',
+                                        }}
+                                    ></div>
+                                    {/* Marqueur central */}
+                                    <div className="absolute left-1/2 top-0 w-0.5 h-full bg-white transform -translate-x-1/2"></div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+            
+            return (
+                <div className={`bg-gray-800 rounded-lg p-6 border-2 transition-all ${
+                    tunerState.enabled 
+                        ? 'border-green-500 shadow-lg shadow-green-500/20' 
+                        : 'border-gray-700'
+                }`}>
+                    {/* En-tête */}
+                    <div className="flex items-center justify-between mb-6">
+                        <div>
+                            <h3 className="font-bold text-white text-xl flex items-center gap-2">
+                                <span>🎸</span> Accordeur Guitare Folk
+                            </h3>
+                            <p className="text-xs text-gray-400 mt-1">Accordage standard (E A D G B E)</p>
+                        </div>
+                        <button
+                            type="button"
+                            onMouseDown={(e) => { e.preventDefault(); onCommand('toggle'); }}
+                            className={`px-6 py-2 rounded-lg text-sm font-bold transition-all ${
+                                tunerState.enabled 
+                                    ? 'bg-green-500 text-white hover:bg-green-600 shadow-lg' 
+                                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                            }`}
+                        >
+                            <span className="pointer-events-none">{tunerState.enabled ? 'ON' : 'OFF'}</span>
+                        </button>
+                    </div>
+                    
+                    {tunerState.enabled && (
+                        <>
+                            {/* Affichage central de la note détectée */}
+                            <div className="mb-6 p-6 bg-gray-900/50 rounded-lg border border-gray-700">
+                                <div className="text-center">
+                                    {tunerState.note ? (
+                                        <>
+                                            <div className="text-sm text-gray-400 mb-2">Note détectée</div>
+                                            <div className="text-5xl font-bold text-white mb-1">
+                                                {tunerState.note}
+                                                <span className="text-2xl text-gray-400 ml-1">{tunerState.octave}</span>
+                                            </div>
+                                            <div className="text-lg font-mono text-gray-400">
+                                                {tunerState.frequency?.toFixed(2)} Hz
+                                            </div>
+                                            
+                                            {currentString && (
+                                                <div className="mt-3 text-sm">
+                                                    <span className="text-blue-400">
+                                                        → Corde {currentString.number} ({currentString.name})
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </>
+                                    ) : (
+                                        <div className="py-4">
+                                            <div className="text-2xl text-gray-500 mb-2">
+                                                Jouez une corde...
+                                            </div>
+                                            <div className="text-sm text-gray-600">
+                                                L'accordeur détectera automatiquement la corde
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                            
+                            {/* Grille des 6 cordes */}
+                            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+                                {guitarStrings.map(string => (
+                                    <StringDisplay
+                                        key={string.number}
+                                        string={string}
+                                        isActive={currentString?.number === string.number}
+                                        cents={currentString?.number === string.number ? tunerState.cents : 0}
+                                    />
+                                ))}
+                            </div>
+                            
+                            {/* Instructions */}
+                            <div className="mt-6 p-4 bg-blue-900/20 border border-blue-700/50 rounded-lg">
+                                <div className="text-xs text-blue-300 space-y-1">
+                                    <div className="font-bold mb-2">💡 Instructions :</div>
+                                    <div>• Jouez une corde à vide (sans appuyer sur les frettes)</div>
+                                    <div>• La corde détectée s'illumine en bleu</div>
+                                    <div>• Ajustez la mécanique jusqu'à ce qu'elle devienne verte ✓</div>
+                                    <div>• Si "Grave ↓" est rouge : tendez la corde (plus aigu)</div>
+                                    <div>• Si "Aigu ↑" est rouge : détendez la corde (plus grave)</div>
+                                </div>
+                            </div>
+                            
+                            {/* Réglage référence A4 */}
+                            <div className="mt-4 pt-4 border-t border-gray-700">
+                                <div className="flex justify-between items-center text-xs mb-2">
+                                    <span className="text-gray-400">Référence A4 (calibration)</span>
+                                    <span className="text-white font-mono font-bold">{tunerState.reference_pitch?.toFixed(1)} Hz</span>
+                                </div>
+                                <input
+                                    type="range"
+                                    min="435"
+                                    max="445"
+                                    step="0.5"
+                                    value={tunerState.reference_pitch || 440}
+                                    onChange={(e) => onCommand('set_reference', parseFloat(e.target.value))}
+                                    className="w-full"
+                                />
+                                <div className="text-xs text-gray-500 mt-1 text-center">
+                                    Standard = 440 Hz (laisser par défaut sauf besoin spécifique)
+                                </div>
+                            </div>
+                        </>
+                    )}
+                </div>
+            );
+        });
+
+        // COMPOSANT PRINCIPAL
+        const VoiceLiveProInterface = () => {
+            const [isConnected, setIsConnected] = useState(false);
+            const [isRunning, setIsRunning] = useState(false);
+            const [inputLevel, setInputLevel] = useState(0);
+            const [outputLevel, setOutputLevel] = useState(0);
+            const [devices, setDevices] = useState([]);
+            const [selectedInput, setSelectedInput] = useState(null);
+            const [selectedOutput, setSelectedOutput] = useState(null);
+            const [showDeviceSetup, setShowDeviceSetup] = useState(true);
+            const [isExporting, setIsExporting] = useState(false);
+            const [metronomeState, setMetronomeState] = useState({
+                enabled: false,
+                is_running: false,
+                is_pre_counting: false,
+                pre_count_remaining: 0,
+                bpm: 120,
+                time_signature_beats: 4,
+                time_signature_note: 4,
+                current_beat: 1,
+                current_bar: 1,
+                volume: 0.5,
+                pre_count_bars: 1,
+                accent_first_beat: true,
+            });
+
+            const [tunerState, setTunerState] = useState({
+                enabled: false,
+                frequency: 0,
+                note: null,
+                cents: 0,
+                in_tune: false
+            });
+
+            const [undoRedoState, setUndoRedoState] = useState({
+                can_undo: false,
+                can_redo: false
+            });
+            const [projects, setProjects] = useState([]);
+            const [showProjectDialog, setShowProjectDialog] = useState(false);
+            
+            const [effects, setEffects] = useState({
+                harmony: { enabled: false, mix: 0.4, voices: 2 },
+                reverb: { enabled: false, wet: 0.3, room_size: 0.6 },
+                wah: { enabled: false, frequency: 800 },
+                chorus: { enabled: false, mix: 0.4, rate: 0.5 }
+            });
+            
+            const [looperStates, setLooperStates] = useState([
+                { recording: false, playing: false, paused: false, overdubbing: false, muted: false, duration: 0, current_time: 0, position: 0, gain: 1.0 },
+                { recording: false, playing: false, paused: false, overdubbing: false, muted: false, duration: 0, current_time: 0, position: 0, gain: 1.0 },
+                { recording: false, playing: false, paused: false, overdubbing: false, muted: false, duration: 0, current_time: 0, position: 0, gain: 1.0 }
+            ]);
+
+            const [masteringState, setMasteringState] = useState({
+                eq_enabled: false,
+                eq_params: {
+                    low_gain: 0, low_freq: 80,
+                    low_mid_gain: 0, low_mid_freq: 250, low_mid_q: 1,
+                    mid_gain: 0, mid_freq: 1000, mid_q: 1,
+                    high_mid_gain: 0, high_mid_freq: 4000, high_mid_q: 1,
+                    high_gain: 0, high_freq: 12000
+                },
+                compressor_enabled: false,
+                compressor_params: {
+                    threshold: -20, ratio: 4, attack: 5, release: 50, knee: 0, makeup_gain: 0
+                },
+                limiter_enabled: true,
+                limiter_params: {
+                    threshold: -1, release: 50
+                }
+            });
+
+            const [activeTrack, setActiveTrack] = useState(0);
+            const [syncInfo, setSyncInfo] = useState({
+                master_track: null,
+                master_duration: 0,
+                sync_mode: true
+            });
+            // Callbacks
+            const handleMasteringToggle = useCallback((module) => {
+                socket.current.emit('mastering_command', { command: 'toggle', module });
+            }, []);
+
+            const handleTunerCommand = useCallback((command, value = null) => {
+                const data = { command };
+                if (command === 'set_reference' && value !== null) {
+                    data.frequency = value;
+                }
+                
+                console.log('🎸 Commande accordeur:', command);
+                socket.current.emit('tuner_command', data);
+            }, []);
+            const handleMasteringParamChange = useCallback((module, param, value) => {
+                socket.current.emit('mastering_command', { 
+                    command: 'set_parameter', 
+                    module, 
+                    parameter: param, 
+                    value 
+                });
+                
+                // Mise à jour locale
+                setMasteringState(prev => ({
+                    ...prev,
+                    [`${module}_params`]: {
+                        ...prev[`${module}_params`],
+                        [param]: value
+                    }
+                }));
+            }, []);
+            
+            const socket = useRef(null);
+            window.voiceLiveSocket = socket;
+            useEffect(() => {
+                const ws = io('http://localhost:5000');
+                socket.current = ws;
+                
+                ws.on('connect', () => {
+                    console.log('✅ Connecté au serveur');
+                    setIsConnected(true);
+                    loadDevices();
+                });
+                
+                ws.on('disconnect', () => {
+                    console.log('❌ Déconnecté du serveur');
+                    setIsConnected(false);
+                    setIsRunning(false);
+                });
+                
+                ws.on('levels_update', (data) => {
+                    setInputLevel(data.input_level);
+                    setOutputLevel(data.output_level);
+                    if (data.looper_states) setLooperStates(data.looper_states);
+                    if (data.active_track !== undefined) setActiveTrack(data.active_track);
+                    if (data.sync_info) setSyncInfo(data.sync_info);
+                    if (data.tuner_state) setTunerState(data.tuner_state);
+                });
+                
+                ws.on('audio_started', (data) => {
+                    console.log('🎵 Audio démarré', data);
+                    setIsRunning(true);
+                    setShowDeviceSetup(false);
+                });
+                
+                ws.on('audio_stopped', () => {
+                    console.log('⏹️ Audio arrêté');
+                    setIsRunning(false);
+                    setInputLevel(0);
+                    setOutputLevel(0);
+                });
+                
+                ws.on('effect_toggled', (data) => {
+                    console.log('✅ Effet togglé:', data.effect, data.enabled ? 'ON' : 'OFF');
+                    setEffects(prev => {
+                        const newEffects = {...prev};
+                        if (newEffects[data.effect]) {
+                            newEffects[data.effect] = {
+                                ...newEffects[data.effect],
+                                enabled: data.enabled
+                            };
+                        }
+                        return newEffects;
+                    });
+                });
+                
+                ws.on('looper_updated', (data) => {
+                    console.log('🔄 Looper mis à jour');
+                    if (data.states) setLooperStates(data.states);
+                    if (data.active_track !== undefined) setActiveTrack(data.active_track);
+                    if (data.sync_info) setSyncInfo(data.sync_info);
+                });
+
+                ws.on('mastering_updated', (data) => {
+                    console.log('Mastering mis à jour', data);
+                    setMasteringState(data);
+                });
+                
+                ws.on('error', (data) => {
+                    console.error('❌ Erreur serveur:', data.message);
+                    alert('Erreur: ' + data.message);
+                });
+                ws.on('metronome_updated', (data) => {
+                    console.log('🎵 Métronome mis à jour', data);
+                    setMetronomeState(data);
+                });
+                
+                ws.on('tuner_updated', (data) => {
+                    console.log('🎸 Accordeur mis à jour', data);
+                    setTunerState(data);
+                });
+                
+                ws.on('undo_redo_updated', (data) => {
+                    console.log('↶↷ Undo/Redo mis à jour', data);
+                    setUndoRedoState(data);
+                });
+                ws.on('projects_list', (data) => setProjects(data.projects));
+                return () => ws.disconnect();
+            }, []);
+
+            const loadDevices = async () => {
+                try {
+                    const response = await fetch('http://localhost:5000/api/devices');
+                    const data = await response.json();
+                    setDevices(data);
+                    const asioDevices = data.filter(d => d.driver_type === 'ASIO');
+                    if (asioDevices.length > 0) {
+                        const asioDevice = asioDevices[0];
+                        if (asioDevice.inputs > 0) setSelectedInput(asioDevice.id);
+                        if (asioDevice.outputs > 0) setSelectedOutput(asioDevice.id);
+                    }
+                    console.log('Devices chargés:', data.length);
+                } catch (error) {
+                    console.error('Erreur chargement devices:', error);
+                }
+            };
+
+            const startAudio = useCallback(() => {
+                if (!selectedInput || !selectedOutput) {
+                    alert('Veuillez sélectionner les périphériques audio');
+                    return;
+                }
+                socket.current.emit('start_audio', {
+                    input_device: selectedInput,
+                    output_device: selectedOutput,
+                    buffer_size: 128
+                });
+            }, [selectedInput, selectedOutput]);
+
+            const stopAudio = useCallback(() => {
+                socket.current.emit('stop_audio');
+            }, []);
+
+            const handleToggleEffect = useCallback((effectName) => {
+                console.log('🔧 Toggle effet:', effectName);
+                socket.current.emit('toggle_effect', { effect: effectName });
+            }, []);
+
+            const handleParameterUpdate = useCallback((effect, param, value) => {
+                socket.current.emit('set_parameter', {
+                    effect: effect,
+                    parameter: param,
+                    value: parseFloat(value)
+                });
+                setEffects(prev => ({
+                    ...prev,
+                    [effect]: { ...prev[effect], [param]: parseFloat(value) }
+                }));
+            }, []);
+
+            const handleLooperCommand = useCallback((command, track = null, position = null, gain = null, offset_ms = null) => {
+                const data = { command };
+                if (track !== null) data.track = track;
+                if (position !== null) data.position = position;
+                if (gain !== null) data.gain = gain;
+                if (offset_ms !== null) data.offset_ms = offset_ms;
+                console.log('🎛️ Commande looper:', command, track !== null ? `(piste ${track + 1})` : '');
+                socket.current.emit('looper_command', data);
+            }, []);
+
+            const handleMetronomeCommand = useCallback((command, track = null, position = null, gain = null, offset_ms = null, tapTimes = null) => {
+                const data = { command };
+                if (tapTimes) data.tap_times = tapTimes;
+                
+                console.log('🎵 Commande métronome:', command);
+                socket.current.emit('metronome_command', data);
+            }, []);
+
+            const handleMetronomeParamChange = useCallback((module, param, value) => {
+                socket.current.emit('metronome_command', {
+                    command: 'set_parameter',
+                    parameter: param,
+                    value: value
+                });
+                
+                // Mise à jour locale immédiate
+                setMetronomeState(prev => ({
+                    ...prev,
+                    [param]: value
+                }));
+            }, []);
+
+            const handleUndo = useCallback(() => {
+                socket.current.emit('undo_redo_command', { command: 'undo' });
+            }, []);
+
+            const handleRedo = useCallback(() => {
+                socket.current.emit('undo_redo_command', { command: 'redo' });
+            }, []);
+
+            const handleSaveProject = useCallback((name) => {
+                socket.current.emit('project_command', { command: 'save', name });
+            }, []);
+
+            const handleLoadProject = useCallback((path) => {
+                socket.current.emit('project_command', { command: 'load', path });
+            }, []);
+            const GlobalTrackController = memo(({ looperStates, onCommand }) => {
+                const hasAnyTrack = looperStates.some(s => s.duration > 0);
+                const allPlaying = looperStates.every(s => s.playing && !s.paused || s.duration === 0);
+                const allPaused = looperStates.some(s => s.paused);
+                const anyRecording = looperStates.some(s => s.recording);
+                
+                return (
+                    <div className="bg-gradient-to-r from-blue-900/30 to-purple-900/30 rounded-lg p-4 border-2 border-blue-700/50 mb-4">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h3 className="text-lg font-bold text-white mb-1">🎛️ Contrôle Global</h3>
+                                <p className="text-xs text-gray-400">Contrôlez toutes les pistes simultanément</p>
+                            </div>
+                            
+                            <div className="flex gap-3">
+                                <button
+                                    type="button"
+                                    onMouseDown={(e) => { e.preventDefault(); onCommand('restart_all'); }}
+                                    disabled={!hasAnyTrack || anyRecording}
+                                    className="px-6 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition-all font-semibold shadow-lg flex items-center gap-2"
+                                    title="Redémarrer toutes les pistes au début"
+                                >
+                                    <span className="pointer-events-none flex items-center gap-2">
+                                        ⏮️ <span>Restart</span>
+                                    </span>
+                                </button>
+                                
+                                <button
+                                    type="button"
+                                    onMouseDown={(e) => { e.preventDefault(); onCommand('play_all'); }}
+                                    disabled={!hasAnyTrack || anyRecording || allPlaying}
+                                    className={`px-6 py-3 rounded-lg transition-all font-semibold shadow-lg flex items-center gap-2 ${
+                                        allPlaying && !allPaused
+                                            ? 'bg-green-700 text-white'
+                                            : 'bg-green-600 hover:bg-green-700 disabled:bg-gray-700 disabled:text-gray-500 text-white'
+                                    }`}
+                                    title="Lecture de toutes les pistes"
+                                >
+                                    <span className="pointer-events-none flex items-center gap-2">
+                                        <PlayIcon /> <span>Play All</span>
+                                    </span>
+                                </button>
+                                
+                                <button
+                                    type="button"
+                                    onMouseDown={(e) => { e.preventDefault(); onCommand('pause_all'); }}
+                                    disabled={!hasAnyTrack || anyRecording || allPaused}
+                                    className={`px-6 py-3 rounded-lg transition-all font-semibold shadow-lg flex items-center gap-2 ${
+                                        allPaused
+                                            ? 'bg-yellow-700 text-white'
+                                            : 'bg-yellow-600 hover:bg-yellow-700 disabled:bg-gray-700 disabled:text-gray-500 text-white'
+                                    }`}
+                                    title="Pause de toutes les pistes"
+                                >
+                                    <span className="pointer-events-none flex items-center gap-2">
+                                        <PauseIcon /> <span>Pause All</span>
+                                    </span>
+                                </button>
+                                
+                                <button
+                                    type="button"
+                                    onMouseDown={(e) => { e.preventDefault(); onCommand('stop_all'); }}
+                                    disabled={!hasAnyTrack || anyRecording}
+                                    className="px-6 py-3 bg-red-600 hover:bg-red-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition-all font-semibold shadow-lg flex items-center gap-2"
+                                    title="Stop toutes les pistes"
+                                >
+                                    <span className="pointer-events-none flex items-center gap-2">
+                                        <StopIcon /> <span>Stop All</span>
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                        
+                        <div className="mt-3 flex items-center gap-4 text-xs text-gray-400">
+                            <div className="flex items-center gap-2">
+                                <div className={`w-2 h-2 rounded-full ${hasAnyTrack ? 'bg-green-400' : 'bg-gray-600'}`}></div>
+                                <span>{looperStates.filter(s => s.duration > 0).length}/3 pistes chargées</span>
+                            </div>
+                            {allPlaying && !allPaused && (
+                                <div className="flex items-center gap-2">
+                                    <div className="w-2 h-2 rounded-full bg-green-400 pulse-animation"></div>
+                                    <span className="text-green-400 font-bold">En lecture</span>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            });
+            const EQPanel = memo(({ enabled, params, onToggle, onParamChange }) => {
+                return (
+                    <div className={`bg-gray-800 rounded-lg p-4 border-2 transition-all ${enabled ? 'border-green-500 shadow-lg shadow-green-500/20' : 'border-gray-700'}`}>
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-bold text-white flex items-center gap-2">
+                                <span>🎚️</span> Égaliseur 5 bandes
+                            </h3>
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); onToggle('eq'); }}
+                                className={`px-4 py-1.5 rounded text-sm font-medium transition-all ${enabled ? 'bg-green-500 text-white hover:bg-green-600' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                            >
+                                <span className="pointer-events-none">{enabled ? 'ON' : 'OFF'}</span>
+                            </button>
+                        </div>
+                        
+                        {enabled && (
+                            <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+                                {/* Low Shelf */}
+                                <div className="bg-gray-900/50 rounded p-3">
+                                    <div className="text-xs font-bold text-blue-400 mb-2">LOW</div>
+                                    <div className="text-xs text-gray-400 mb-1">{params.low_freq}Hz</div>
+                                    <div className="text-xs font-mono font-bold text-white mb-1">{params.low_gain.toFixed(1)} dB</div>
+                                    <input
+                                        type="range"
+                                        min="-12"
+                                        max="12"
+                                        step="0.1"
+                                        value={params.low_gain}
+                                        onChange={(e) => onParamChange('eq', 'low_gain', parseFloat(e.target.value))}
+                                        className="w-full"
+                                        style={{transform: 'rotate(270deg)', width: '80px', margin: '40px auto'}}
+                                    />
+                                </div>
+                                
+                                {/* Low Mid */}
+                                <div className="bg-gray-900/50 rounded p-3">
+                                    <div className="text-xs font-bold text-green-400 mb-2">L-MID</div>
+                                    <div className="text-xs text-gray-400 mb-1">{params.low_mid_freq}Hz</div>
+                                    <div className="text-xs font-mono font-bold text-white mb-1">{params.low_mid_gain.toFixed(1)} dB</div>
+                                    <input
+                                        type="range"
+                                        min="-12"
+                                        max="12"
+                                        step="0.1"
+                                        value={params.low_mid_gain}
+                                        onChange={(e) => onParamChange('eq', 'low_mid_gain', parseFloat(e.target.value))}
+                                        className="w-full"
+                                        style={{transform: 'rotate(270deg)', width: '80px', margin: '40px auto'}}
+                                    />
+                                    <div className="mt-12">
+                                        <div className="text-xs text-gray-500 mb-1">Q: {params.low_mid_q.toFixed(1)}</div>
+                                        <input
+                                            type="range"
+                                            min="0.1"
+                                            max="10"
+                                            step="0.1"
+                                            value={params.low_mid_q}
+                                            onChange={(e) => onParamChange('eq', 'low_mid_q', parseFloat(e.target.value))}
+                                            className="w-full"
+                                        />
+                                    </div>
+                                </div>
+                                
+                                {/* Mid */}
+                                <div className="bg-gray-900/50 rounded p-3">
+                                    <div className="text-xs font-bold text-yellow-400 mb-2">MID</div>
+                                    <div className="text-xs text-gray-400 mb-1">{params.mid_freq}Hz</div>
+                                    <div className="text-xs font-mono font-bold text-white mb-1">{params.mid_gain.toFixed(1)} dB</div>
+                                    <input
+                                        type="range"
+                                        min="-12"
+                                        max="12"
+                                        step="0.1"
+                                        value={params.mid_gain}
+                                        onChange={(e) => onParamChange('eq', 'mid_gain', parseFloat(e.target.value))}
+                                        className="w-full"
+                                        style={{transform: 'rotate(270deg)', width: '80px', margin: '40px auto'}}
+                                    />
+                                    <div className="mt-12">
+                                        <div className="text-xs text-gray-500 mb-1">Q: {params.mid_q.toFixed(1)}</div>
+                                        <input
+                                            type="range"
+                                            min="0.1"
+                                            max="10"
+                                            step="0.1"
+                                            value={params.mid_q}
+                                            onChange={(e) => onParamChange('eq', 'mid_q', parseFloat(e.target.value))}
+                                            className="w-full"
+                                        />
+                                    </div>
+                                </div>
+                                
+                                {/* High Mid */}
+                                <div className="bg-gray-900/50 rounded p-3">
+                                    <div className="text-xs font-bold text-orange-400 mb-2">H-MID</div>
+                                    <div className="text-xs text-gray-400 mb-1">{params.high_mid_freq}Hz</div>
+                                    <div className="text-xs font-mono font-bold text-white mb-1">{params.high_mid_gain.toFixed(1)} dB</div>
+                                    <input
+                                        type="range"
+                                        min="-12"
+                                        max="12"
+                                        step="0.1"
+                                        value={params.high_mid_gain}
+                                        onChange={(e) => onParamChange('eq', 'high_mid_gain', parseFloat(e.target.value))}
+                                        className="w-full"
+                                        style={{transform: 'rotate(270deg)', width: '80px', margin: '40px auto'}}
+                                    />
+                                    <div className="mt-12">
+                                        <div className="text-xs text-gray-500 mb-1">Q: {params.high_mid_q.toFixed(1)}</div>
+                                        <input
+                                            type="range"
+                                            min="0.1"
+                                            max="10"
+                                            step="0.1"
+                                            value={params.high_mid_q}
+                                            onChange={(e) => onParamChange('eq', 'high_mid_q', parseFloat(e.target.value))}
+                                            className="w-full"
+                                        />
+                                    </div>
+                                </div>
+                                
+                                {/* High Shelf */}
+                                <div className="bg-gray-900/50 rounded p-3">
+                                    <div className="text-xs font-bold text-red-400 mb-2">HIGH</div>
+                                    <div className="text-xs text-gray-400 mb-1">{params.high_freq}Hz</div>
+                                    <div className="text-xs font-mono font-bold text-white mb-1">{params.high_gain.toFixed(1)} dB</div>
+                                    <input
+                                        type="range"
+                                        min="-12"
+                                        max="12"
+                                        step="0.1"
+                                        value={params.high_gain}
+                                        onChange={(e) => onParamChange('eq', 'high_gain', parseFloat(e.target.value))}
+                                        className="w-full"
+                                        style={{transform: 'rotate(270deg)', width: '80px', margin: '40px auto'}}
+                                    />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            });
+
+            // COMPOSANT CompressorPanel
+            const CompressorPanel = memo(({ enabled, params, onToggle, onParamChange }) => {
+                return (
+                    <div className={`bg-gray-800 rounded-lg p-4 border-2 transition-all ${enabled ? 'border-purple-500 shadow-lg shadow-purple-500/20' : 'border-gray-700'}`}>
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-bold text-white flex items-center gap-2">
+                                <span>🔊</span> Compresseur
+                            </h3>
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); onToggle('compressor'); }}
+                                className={`px-4 py-1.5 rounded text-sm font-medium transition-all ${enabled ? 'bg-purple-500 text-white hover:bg-purple-600' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                            >
+                                <span className="pointer-events-none">{enabled ? 'ON' : 'OFF'}</span>
+                            </button>
+                        </div>
+                        
+                        {enabled && (
+                            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-gray-400">Threshold</span>
+                                        <span className="text-white font-mono font-bold">{params.threshold.toFixed(1)} dB</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="-60"
+                                        max="0"
+                                        step="0.5"
+                                        value={params.threshold}
+                                        onChange={(e) => onParamChange('compressor', 'threshold', parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                                
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-gray-400">Ratio</span>
+                                        <span className="text-white font-mono font-bold">{params.ratio.toFixed(1)}:1</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="1"
+                                        max="20"
+                                        step="0.1"
+                                        value={params.ratio}
+                                        onChange={(e) => onParamChange('compressor', 'ratio', parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                                
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-gray-400">Attack</span>
+                                        <span className="text-white font-mono font-bold">{params.attack.toFixed(1)} ms</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="0.1"
+                                        max="100"
+                                        step="0.1"
+                                        value={params.attack}
+                                        onChange={(e) => onParamChange('compressor', 'attack', parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                                
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-gray-400">Release</span>
+                                        <span className="text-white font-mono font-bold">{params.release.toFixed(0)} ms</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="10"
+                                        max="1000"
+                                        step="1"
+                                        value={params.release}
+                                        onChange={(e) => onParamChange('compressor', 'release', parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                                
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-gray-400">Knee</span>
+                                        <span className="text-white font-mono font-bold">{params.knee.toFixed(1)} dB</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="10"
+                                        step="0.1"
+                                        value={params.knee}
+                                        onChange={(e) => onParamChange('compressor', 'knee', parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                                
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-gray-400">Makeup Gain</span>
+                                        <span className="text-white font-mono font-bold">{params.makeup_gain.toFixed(1)} dB</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="0"
+                                        max="24"
+                                        step="0.1"
+                                        value={params.makeup_gain}
+                                        onChange={(e) => onParamChange('compressor', 'makeup_gain', parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            });
+
+            // COMPOSANT LimiterPanel
+            const LimiterPanel = memo(({ enabled, params, onToggle, onParamChange }) => {
+                return (
+                    <div className={`bg-gray-800 rounded-lg p-4 border-2 transition-all ${enabled ? 'border-red-500 shadow-lg shadow-red-500/20' : 'border-gray-700'}`}>
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="font-bold text-white flex items-center gap-2">
+                                <span>🛡️</span> Limiteur
+                            </h3>
+                            <button
+                                type="button"
+                                onMouseDown={(e) => { e.preventDefault(); onToggle('limiter'); }}
+                                className={`px-4 py-1.5 rounded text-sm font-medium transition-all ${enabled ? 'bg-red-500 text-white hover:bg-red-600' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'}`}
+                            >
+                                <span className="pointer-events-none">{enabled ? 'ON' : 'OFF'}</span>
+                            </button>
+                        </div>
+                        
+                        {enabled && (
+                            <div className="grid grid-cols-2 gap-4">
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-gray-400">Ceiling</span>
+                                        <span className="text-white font-mono font-bold">{params.threshold.toFixed(1)} dB</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="-12"
+                                        max="0"
+                                        step="0.1"
+                                        value={params.threshold}
+                                        onChange={(e) => onParamChange('limiter', 'threshold', parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                                
+                                <div className="space-y-1">
+                                    <div className="flex justify-between text-xs">
+                                        <span className="text-gray-400">Release</span>
+                                        <span className="text-white font-mono font-bold">{params.release.toFixed(0)} ms</span>
+                                    </div>
+                                    <input
+                                        type="range"
+                                        min="10"
+                                        max="500"
+                                        step="1"
+                                        value={params.release}
+                                        onChange={(e) => onParamChange('limiter', 'release', parseFloat(e.target.value))}
+                                        className="w-full"
+                                    />
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                );
+            });
+
+            // COMPOSANT PRINCIPAL MasteringSection
+            const MasteringSection = memo(({ masteringState, onToggle, onParamChange }) => {
+                return (
+                    <div className="bg-gradient-to-br from-gray-800 to-gray-900 rounded-xl shadow-xl p-6 border-2 border-gray-700">
+                        <div className="mb-6">
+                            <h2 className="text-2xl font-bold text-white mb-2 flex items-center gap-2">
+                                <span>🎛️</span> Mastering Chain
+                            </h2>
+                            <p className="text-sm text-gray-400">Traitement professionnel de la sortie audio</p>
+                        </div>
+                        
+                        <div className="space-y-4">
+                            <EQPanel
+                                enabled={masteringState.eq_enabled}
+                                params={masteringState.eq_params}
+                                onToggle={onToggle}
+                                onParamChange={onParamChange}
+                            />
+                            
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                                <CompressorPanel
+                                    enabled={masteringState.compressor_enabled}
+                                    params={masteringState.compressor_params}
+                                    onToggle={onToggle}
+                                    onParamChange={onParamChange}
+                                />
+                                
+                                <LimiterPanel
+                                    enabled={masteringState.limiter_enabled}
+                                    params={masteringState.limiter_params}
+                                    onToggle={onToggle}
+                                    onParamChange={onParamChange}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                );
+            });
+            const handleSelectTrack = useCallback((index) => {
+                console.log('🎵 Sélection piste', index + 1);
+                handleLooperCommand('set_track', index);
+            }, [handleLooperCommand]);
+
+            const exportMix = useCallback(async (format = 'wav') => {
+                setIsExporting(true);
+                try {
+                    const response = await fetch('http://localhost:5000/api/export', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ format: format, normalize: true })
+                    });
+                    
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.error || 'Erreur export');
+                    }
+                    
+                    const blob = await response.blob();
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `voicelive_export_${Date.now()}.${format}`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(url);
+                    
+                    console.log('✅ Export terminé:', format);
+                } catch (error) {
+                    console.error('Erreur export:', error);
+                    alert('Erreur export: ' + error.message);
+                } finally {
+                    setIsExporting(false);
+                }
+            }, []);
+
+            if (showDeviceSetup && !isRunning) {
+                return (
+                    <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-8">
+                        <div className="max-w-2xl mx-auto">
+                            <div className="bg-gray-800 rounded-xl shadow-2xl p-8 border border-gray-700">
+                                <div className="text-center mb-8">
+                                    <h1 className="text-4xl font-bold text-white mb-2">🎸 VoiceLive Pro</h1>
+                                    <p className="text-gray-400">Configuration Audio</p>
+                                    <div className="mt-4">
+                                        <span className={`inline-flex items-center px-3 py-1 rounded-full text-sm font-medium ${isConnected ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
+                                            <span className={`w-2 h-2 rounded-full mr-2 ${isConnected ? 'bg-green-400 pulse-animation' : 'bg-red-400'}`} />
+                                            {isConnected ? 'Connecté' : 'Déconnecté'}
+                                        </span>
+                                    </div>
+                                </div>
+                                <div className="space-y-6">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-300 mb-2">🎤 Périphérique d'entrée</label>
+                                        <select value={selectedInput || ''} onChange={(e) => setSelectedInput(parseInt(e.target.value))} className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-3">
+                                            <option value="">Sélectionner...</option>
+                                            {devices.filter(d => d.inputs > 0).map(dev => (
+                                                <option key={dev.id} value={dev.id}>{dev.driver_type === 'ASIO' ? '⭐ ' : ''}{dev.name} ({dev.inputs} entrées)</option>
+                                            ))}
+                                        </select>
+                                        <p className="mt-1 text-xs text-gray-400">⭐ = ASIO (faible latence)</p>
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-300 mb-2">🔊 Périphérique de sortie</label>
+                                        <select value={selectedOutput || ''} onChange={(e) => setSelectedOutput(parseInt(e.target.value))} className="w-full bg-gray-700 border border-gray-600 text-white rounded-lg px-4 py-3">
+                                            <option value="">Sélectionner...</option>
+                                            {devices.filter(d => d.outputs > 0).map(dev => (
+                                                <option key={dev.id} value={dev.id}>{dev.driver_type === 'ASIO' ? '⭐ ' : ''}{dev.name} ({dev.outputs} sorties)</option>
+                                            ))}
+                                        </select>
+                                        <p className="mt-1 text-xs text-gray-400">⚠️ Même type de driver pour entrée et sortie!</p>
+                                    </div>
+                                    <button 
+                                        type="button"
+                                        onMouseDown={(e) => { e.preventDefault(); startAudio(); }}
+                                        disabled={!selectedInput || !selectedOutput || !isConnected} 
+                                        className="w-full bg-gradient-to-r from-blue-500 to-blue-600 hover:from-blue-600 hover:to-blue-700 disabled:from-gray-600 disabled:to-gray-700 text-white font-semibold py-4 px-6 rounded-lg transition-all transform hover:scale-105 disabled:scale-100 disabled:cursor-not-allowed flex items-center justify-center gap-2 shadow-lg"
+                                    >
+                                        <span className="pointer-events-none flex items-center gap-2">
+                                            <PlayIcon /><span>Démarrer le système audio</span>
+                                        </span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen bg-gradient-to-br from-gray-900 to-gray-800 p-4">
+                    <div className="max-w-7xl mx-auto">
+                        <div className="bg-gray-800 rounded-xl shadow-xl p-6 mb-4 border border-gray-700">
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <h1 className="text-3xl font-bold text-white mb-1">🎸 VoiceLive Pro</h1>
+                                    <p className="text-gray-400 text-sm">Contrôles avancés - Version optimisée</p>
+                                </div>
+                                <div className="flex gap-4">
+                                    <button 
+                                        type="button"
+                                        onMouseDown={(e) => { e.preventDefault(); stopAudio(); setShowDeviceSetup(true); }}
+                                        className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-colors flex items-center gap-2"
+                                    >
+                                        <span className="pointer-events-none flex items-center gap-2">
+                                            <SettingsIcon /><span>Config</span>
+                                        </span>
+                                    </button>
+                                    <button 
+                                        type="button"
+                                        onMouseDown={(e) => { e.preventDefault(); stopAudio(); }}
+                                        className="px-6 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors flex items-center gap-2 font-semibold shadow-lg"
+                                    >
+                                        <span className="pointer-events-none flex items-center gap-2">
+                                            <SquareIcon /><span>Arrêter</span>
+                                        </span>
+                                    </button>
+                                </div>
+                                <div className="flex gap-2">
+                                    <button 
+                                        onMouseDown={handleUndo} 
+                                        disabled={!undoRedoState.can_undo}
+                                        className="px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800"
+                                    >
+                                        ↶ Undo
+                                    </button>
+                                    <button 
+                                        onMouseDown={handleRedo}
+                                        disabled={!undoRedoState.can_redo}
+                                        className="px-3 py-2 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800"
+                                    >
+                                        ↷ Redo
+                                    </button>
+                                </div>
+                            </div>
+                            <div className="mt-6 space-y-2">
+                                <LevelMeter level={inputLevel} label="IN" />
+                                <LevelMeter level={outputLevel} label="OUT" />
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-4">
+                            <div className="space-y-4">
+                                <h2 className="text-xl font-bold text-white flex items-center gap-2">🎤 Effets Vocaux</h2>
+                                <EffectPanel 
+                                    name="harmony" 
+                                    title="Harmony" 
+                                    enabled={effects.harmony.enabled} 
+                                    parameters={effects.harmony}
+                                    onToggle={handleToggleEffect}
+                                    onParameterChange={handleParameterUpdate}
+                                />
+                                <EffectPanel 
+                                    name="reverb" 
+                                    title="Reverb Pro" 
+                                    enabled={effects.reverb.enabled} 
+                                    parameters={effects.reverb}
+                                    onToggle={handleToggleEffect}
+                                    onParameterChange={handleParameterUpdate}
+                                />
+                            </div>
+                            <div className="space-y-4">
+                                <h2 className="text-xl font-bold text-white flex items-center gap-2">🎸 Effets Guitare</h2>
+                                <EffectPanel 
+                                    name="wah" 
+                                    title="Wah" 
+                                    enabled={effects.wah.enabled} 
+                                    parameters={effects.wah}
+                                    onToggle={handleToggleEffect}
+                                    onParameterChange={handleParameterUpdate}
+                                />
+                                <EffectPanel 
+                                    name="chorus" 
+                                    title="Chorus" 
+                                    enabled={effects.chorus.enabled} 
+                                    parameters={effects.chorus}
+                                    onToggle={handleToggleEffect}
+                                    onParameterChange={handleParameterUpdate}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="bg-gray-800 rounded-xl shadow-xl p-6 border border-gray-700 mb-4">
+                            <h2 className="text-2xl font-bold text-white mb-4">🔄 Looper 3 Pistes</h2>
+                            {/* ✅ NOUVEAU : Contrôleur global */}
+                            <GlobalTrackController 
+                                looperStates={looperStates}
+                                onCommand={handleLooperCommand}
+                            />
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+                                {looperStates.map((state, index) => (
+                                    <TrackPanel 
+                                        key={index} 
+                                        index={index} 
+                                        state={state}
+                                        isActive={index === activeTrack}
+                                        onSelectTrack={handleSelectTrack}
+                                        onCommand={handleLooperCommand}
+                                    />
+                                ))}
+                            </div>
+                            <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+                                <button 
+                                    type="button"
+                                    onMouseDown={(e) => { e.preventDefault(); handleLooperCommand('record_stop'); }}
+                                    className="px-6 py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-all font-semibold flex items-center justify-center gap-2 shadow-lg"
+                                >
+                                    <span className="pointer-events-none flex items-center gap-2">
+                                        <CircleIcon /><span>Record/Stop</span>
+                                    </span>
+                                </button>
+                                <button 
+                                    type="button"
+                                    onMouseDown={(e) => { 
+                                        e.preventDefault(); 
+                                        const track = looperStates[activeTrack]; 
+                                        if (track.playing || track.recording) handleLooperCommand('record_stop'); 
+                                    }} 
+                                    disabled={!looperStates[activeTrack].playing && !looperStates[activeTrack].recording} 
+                                    className="px-6 py-3 bg-gray-700 hover:bg-gray-600 disabled:bg-gray-800 disabled:text-gray-600 text-white rounded-lg transition-all font-semibold flex items-center justify-center gap-2 shadow-lg"
+                                >
+                                    <span className="pointer-events-none flex items-center gap-2">
+                                        <SquareIcon /><span>Stop</span>
+                                    </span>
+                                </button>
+                                <button 
+                                    type="button"
+                                    onMouseDown={(e) => { e.preventDefault(); handleLooperCommand('overdub'); }}
+                                    className="px-6 py-3 bg-orange-600 hover:bg-orange-700 text-white rounded-lg transition-all font-semibold shadow-lg"
+                                >
+                                    <span className="pointer-events-none">🟠 Overdub</span>
+                                </button>
+                                <button 
+                                    type="button"
+                                    onMouseDown={(e) => { e.preventDefault(); handleLooperCommand('clear_track'); }}
+                                    className="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg transition-all font-semibold shadow-lg"
+                                >
+                                    <span className="pointer-events-none">🗑️ Clear Piste</span>
+                                </button>
+                                <button 
+                                    type="button"
+                                    onMouseDown={(e) => { e.preventDefault(); handleLooperCommand('clear_all'); }}
+                                    className="px-6 py-3 bg-red-700 hover:bg-red-800 text-white rounded-lg transition-all font-semibold shadow-lg"
+                                >
+                                    <span className="pointer-events-none">🗑️ Clear Tout</span>
+                                </button>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                            <SyncPanel 
+                                syncInfo={syncInfo} 
+                                looperStates={looperStates}
+                                onCommand={handleLooperCommand}
+                            />
+                            <div className="p-4 bg-gray-900/50 rounded-lg border border-gray-700">
+                                <h3 className="text-sm font-bold text-white mb-3">Export Audio</h3>
+                                <div className="flex gap-3">
+                                    <button 
+                                        type="button"
+                                        onMouseDown={(e) => { e.preventDefault(); exportMix('wav'); }}
+                                        disabled={isExporting || looperStates.every(s => s.duration === 0)} 
+                                        className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition-colors font-medium"
+                                    >
+                                        <span className="pointer-events-none">
+                                            {isExporting ? 'Export en cours...' : 'Exporter WAV'}
+                                        </span>
+                                    </button>
+                                    <button 
+                                        type="button"
+                                        onMouseDown={(e) => { e.preventDefault(); exportMix('flac'); }}
+                                        disabled={isExporting || looperStates.every(s => s.duration === 0)} 
+                                        className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-lg transition-colors font-medium"
+                                    >
+                                        <span className="pointer-events-none">
+                                            {isExporting ? 'Export en cours...' : 'Exporter FLAC'}
+                                        </span>
+                                    </button>
+                                </div>
+                                <p className="text-xs text-gray-400 mt-2">Normalisation auto -1dB. WAV = max qualité, FLAC = compression sans perte.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div className="mb-4">
+                        <MetronomePanel
+                            metronomeState={metronomeState}
+                            onCommand={handleMetronomeCommand}
+                            onParamChange={handleMetronomeParamChange}
+                        />
+                    </div>
+                    {/* Accordeur */}
+                    <div className="mb-4">
+                        <GuitarTunerPanel tunerState={tunerState} onCommand={handleTunerCommand} />
+                    </div>
+                    <div className="mt-4">
+                        <MasteringSection
+                            masteringState={masteringState}
+                            onToggle={handleMasteringToggle}
+                            onParamChange={handleMasteringParamChange}
+                        />
+                    </div>
+                </div>
+                
+            );
+        };
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(React.createElement(VoiceLiveProInterface));
+    </script>
+    
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</body>
+</html>

@@ -1,0 +1,51 @@
+{
+    "name": "preset1",
+    "slot": 0,
+    "effects": [
+        {
+            "name": "Wah",
+            "enabled": true,
+            "parameters": {
+                "frequency": 800,
+                "resonance": 8.0,
+                "mix": 1.0,
+                "auto_wah": true,
+                "speed": 1.0
+            }
+        },
+        {
+            "name": "Chorus",
+            "enabled": true,
+            "parameters": {
+                "rate": 0.5,
+                "depth": 0.5,
+                "delay": 0.02,
+                "feedback": 0.3,
+                "mix": 0.4
+            }
+        }
+    ],
+    "looper": [
+        {
+            "recording": true,
+            "playing": true,
+            "overdubbing": false,
+            "length": 1,
+            "duration": 100
+        },
+        {
+            "recording": false,
+            "playing": false,
+            "overdubbing": false,
+            "length": 0,
+            "duration": 0
+        },
+        {
+            "recording": true,
+            "playing": true,
+            "overdubbing": false,
+            "length": 0,
+            "duration": 0
+        }
+    ]
+}
