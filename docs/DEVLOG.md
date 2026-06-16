@@ -64,6 +64,36 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étape 4 : chaîne d'effets par piste + 2ᵉ effet
+
+### Livré
+- **`dsp/EffectChain`** : chaîne d'effets ordonnée. Allocation à l'ajout et
+  dans `prepare()` ; `process()` enchaîne les effets sans allocation. Un effet
+  ajouté après `prepare()` est préparé automatiquement.
+- **`dsp/Delay`** : 2ᵉ effet (écho à ligne de retard), C++ pur. Ligne
+  dimensionnée une fois dans `prepare()`, `process()` sans allocation.
+  Paramètres bornés : délai, réinjection (feedback), mix dry/wet.
+- **Intégration `engine/TrackProcessor`** : chaîne d'effets par piste, appliquée
+  à la lecture (après lecture de la boucle, avant gain/mute). `prepare()` prend
+  désormais la fréquence + la taille de bloc max (surcharge de commodité
+  conservée).
+- **`engine/LooperEngine`** : accesseur `effectsForTrack(i)` pour insérer des
+  effets dans une piste (hors temps réel). Le moteur lie désormais `dsp`.
+
+### Tests (+9, total projet : 72, 100 % verts)
+- Delay : passthrough mix=0, **retard d'impulsion vérifié**, paramètres clampés.
+- EffectChain : passthrough à vide, effet nul ignoré, effet appliqué.
+- TrackProcessor : **chaîne d'effets appliquée en lecture** (impulsion retardée).
+- LooperEngine : chaîne d'effets par piste, index borné.
+
+### Prochaines étapes
+1. Couche `app/` : intégration JUCE (desktop d'abord) — projet CMake + JUCE,
+   pont moteur ↔ I/O audio (`AudioDeviceManager`) et UI minimale.
+2. Pipeline CI Android (JUCE + NDK) produisant un **APK en artefact** téléchargeable.
+3. 3ᵉ effet (wah/chorus) et insertion d'effets via la file de commandes RT.
+
+---
+
 ## 2026-06-16 — Étape 3 : squelette du moteur temps réel (`engine/`)
 
 ### Livré (nouveau module `engine/`, dépend uniquement de `core`)

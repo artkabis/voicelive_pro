@@ -13,20 +13,37 @@
 #include <cstddef>
 #include <span>
 
+#include "voicelive/core/AudioParams.hpp"
 #include "voicelive/core/LooperTrack.hpp"
 #include "voicelive/core/Result.hpp"
+#include "voicelive/dsp/EffectChain.hpp"
 #include "voicelive/engine/LoopAudio.hpp"
 
 namespace voicelive::engine {
 
 class TrackProcessor {
 public:
-    /// Alloue la capacité de boucle (hors temps réel).
-    void prepare(std::size_t capacitySamples) { audio_.prepare(capacitySamples); }
+    static constexpr std::size_t kDefaultMaxBlock = 4096;
+
+    /// Alloue la capacité de boucle et prépare la chaîne d'effets (hors RT).
+    void prepare(core::SampleRate sampleRate, std::size_t capacitySamples,
+                 std::size_t maxBlockSize) {
+        audio_.prepare(capacitySamples);
+        effects_.prepare(sampleRate, maxBlockSize);
+    }
+
+    /// Surcharge de commodité (fréquence studio, bloc max par défaut).
+    void prepare(std::size_t capacitySamples) {
+        prepare(core::SampleRate::studio(), capacitySamples, kDefaultMaxBlock);
+    }
 
     [[nodiscard]] const core::LooperTrack& track() const noexcept { return track_; }
     [[nodiscard]] const LoopAudio& audio() const noexcept { return audio_; }
     [[nodiscard]] std::size_t playhead() const noexcept { return playhead_; }
+
+    /// Chaîne d'effets de la piste (ajout d'effets hors temps réel).
+    [[nodiscard]] dsp::EffectChain& effects() noexcept { return effects_; }
+    [[nodiscard]] const dsp::EffectChain& effects() const noexcept { return effects_; }
 
     void setGain(core::Gain gain) noexcept { track_.setGain(gain); }
     void setMuted(bool muted) noexcept { track_.setMuted(muted); }
@@ -73,12 +90,14 @@ public:
                 break;
             case core::TrackState::Playing:
                 playhead_ = audio_.readLooped(output, playhead_);
+                effects_.process(output);
                 applyGainAndMute(output);
                 break;
             case core::TrackState::Overdubbing: {
                 const std::size_t startPos = playhead_;
                 playhead_ = audio_.readLooped(output, startPos);
                 audio_.overdub(input, startPos);
+                effects_.process(output);
                 applyGainAndMute(output);
                 break;
             }
@@ -113,6 +132,7 @@ private:
 
     core::LooperTrack track_;
     LoopAudio audio_;
+    dsp::EffectChain effects_;
     std::size_t playhead_ = 0;
 };
 

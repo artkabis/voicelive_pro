@@ -25,7 +25,7 @@ core::Status LooperEngine::prepare(core::SampleRate sampleRate, std::size_t trac
     tracks_.clear();
     tracks_.resize(trackCount);
     for (TrackProcessor& processor : tracks_) {
-        processor.prepare(loopCapacity);
+        processor.prepare(sampleRate, loopCapacity, maxBlockSize);
     }
     scratch_.assign(maxBlockSize, 0.0F);
     selected_ = 0;

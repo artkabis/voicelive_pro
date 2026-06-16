@@ -41,7 +41,7 @@ rien — c'est ce qui le rend compilable en WASM et testable sans matériel audi
 | Couche   | État        | Contenu                                              |
 |----------|-------------|------------------------------------------------------|
 | `core/`  | 🟢 en cours | `LooperTrack`, `Transport` (tempo/quantif.), `Project`, types forts, `Result/Status` |
-| `dsp/`   | 🟢 amorcé   | Interface `Effect` (contrat temps réel) + `Reverb` (Freeverb) en C++ pur |
+| `dsp/`   | 🟢 en cours | `Effect` (contrat RT) · `Reverb` · `Delay` · `EffectChain` (chaîne par piste) |
 | `engine/`| 🟢 en cours | `LooperEngine` (N pistes + transport + file de commandes + mix), `RingBuffer`, `LoopAudio`, `Mixer`, `TrackProcessor` |
 | `app/`   | ⚪ à venir  | Intégration JUCE (desktop/mobile) + shell web WASM   |
 

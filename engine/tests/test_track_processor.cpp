@@ -3,17 +3,21 @@
 // Test d'intégration : enchaîne état métier (core) et rendu audio (engine) sur
 // un cycle complet, puis démontre le mixage de deux pistes.
 #include <array>
+#include <memory>
 #include <vector>
 
 #include "voicelive/core/AudioParams.hpp"
 #include "voicelive/core/LooperTrack.hpp"
+#include "voicelive/dsp/Delay.hpp"
 #include "voicelive/engine/Mixer.hpp"
 #include "voicelive/engine/TrackProcessor.hpp"
 #include "voicelive_testing/testing.hpp"
 
 namespace mixer = voicelive::engine::mixer;
 using voicelive::core::Gain;
+using voicelive::core::SampleRate;
 using voicelive::core::TrackState;
+using voicelive::dsp::Delay;
 using voicelive::engine::TrackProcessor;
 
 TEST(TrackProcessor, enregistrement_capture_l_entree) {
@@ -134,4 +138,31 @@ TEST(TrackProcessor, mixage_de_deux_pistes) {
 
     CHECK_NEAR(master[0], 0.5F, 1e-6);  // 0.3 + 0.2
     CHECK_NEAR(master[3], 0.5F, 1e-6);
+}
+
+TEST(TrackProcessor, applique_la_chaine_d_effets_en_lecture) {
+    TrackProcessor proc;
+    proc.prepare(SampleRate::studio(), 1000, 64);
+
+    // Enregistre une impulsion [1, 0, 0, 0].
+    REQUIRE(proc.startRecording().ok());
+    const std::array<float, 4> content{1.0F, 0.0F, 0.0F, 0.0F};
+    std::vector<float> scratch(4, 0.0F);
+    proc.process(scratch, content);
+    REQUIRE(proc.finishRecording().ok());
+
+    // Insère un delay de 2 échantillons, 100 % wet, sans réinjection.
+    auto delay = std::make_unique<Delay>();
+    delay->setMix(1.0F);
+    delay->setFeedback(0.0F);
+    delay->setDelaySeconds(2.0F / 48000.0F);
+    proc.effects().add(std::move(delay));
+    CHECK(proc.effects().size() == 1U);
+
+    const std::array<float, 4> silence{};
+    std::vector<float> output(4, 0.0F);
+    proc.process(output, silence);
+    // Lecture [1,0,0,0] retardée de 2 → [0,0,1,0].
+    CHECK_NEAR(output[0], 0.0F, 1e-6);
+    CHECK_NEAR(output[2], 1.0F, 1e-6);
 }

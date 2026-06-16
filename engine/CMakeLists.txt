@@ -10,7 +10,7 @@ add_library(voicelive::engine ALIAS voicelive_engine)
 
 target_include_directories(voicelive_engine
     PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/include)
-target_link_libraries(voicelive_engine PUBLIC voicelive::core)
+target_link_libraries(voicelive_engine PUBLIC voicelive::core voicelive::dsp)
 target_compile_features(voicelive_engine PUBLIC cxx_std_20)
 
 voicelive_set_target_warnings(voicelive_engine)

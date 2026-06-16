@@ -3,11 +3,13 @@
 // Tests du moteur assemblé : configuration, contrôle synchrone et via la file
 // de commandes lock-free, mixage multi-pistes, et pont avec core::Project.
 #include <array>
+#include <memory>
 #include <vector>
 
 #include "voicelive/core/AudioParams.hpp"
 #include "voicelive/core/Project.hpp"
 #include "voicelive/core/Transport.hpp"
+#include "voicelive/dsp/Delay.hpp"
 #include "voicelive/engine/LooperEngine.hpp"
 #include "voicelive_testing/testing.hpp"
 
@@ -17,6 +19,7 @@ using voicelive::core::Gain;
 using voicelive::core::Project;
 using voicelive::core::SampleRate;
 using voicelive::core::TrackState;
+using voicelive::dsp::Delay;
 using voicelive::engine::EngineCommand;
 using voicelive::engine::LooperEngine;
 
@@ -131,4 +134,16 @@ TEST(LooperEngine, apply_reglages_depuis_project) {
     CHECK(engine.name() == "Session B");
     CHECK(engine.transport().bpm().value() == 90.0);
     CHECK(engine.track(0)->track().isMuted());
+}
+
+TEST(LooperEngine, chaine_d_effets_par_piste) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+
+    auto* effects = engine.effectsForTrack(0);
+    REQUIRE(effects != nullptr);
+    effects->add(std::make_unique<Delay>());
+    CHECK(engine.effectsForTrack(0)->size() == 1U);
+
+    CHECK(engine.effectsForTrack(5) == nullptr);  // index hors bornes
 }

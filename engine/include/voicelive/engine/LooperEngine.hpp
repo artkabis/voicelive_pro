@@ -69,6 +69,11 @@ public:
         return index < tracks_.size() ? &tracks_[index] : nullptr;
     }
 
+    /// Chaîne d'effets d'une piste (pour insérer des effets ; hors temps réel).
+    [[nodiscard]] dsp::EffectChain* effectsForTrack(std::size_t index) noexcept {
+        return index < tracks_.size() ? &tracks_[index].effects() : nullptr;
+    }
+
     // --- Contrôle synchrone validé (renvoie Status) -----------------------
     core::Status recordTrack(std::size_t i) { return applyCommand({Cmd::Record, i}); }
     core::Status finishRecordingTrack(std::size_t i) {
