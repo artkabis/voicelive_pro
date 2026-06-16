@@ -83,6 +83,7 @@ TEST(LooperTrack, lecture_piste_vide_interdite) {
     const auto status = track.play();
     CHECK(!status.ok());
     CHECK(status.error().code == ErrorCode::InvalidTransition);
+    CHECK(!status.error().message.empty());     // message statique renseigné
     CHECK(track.state() == TrackState::Empty);  // état inchangé
 }
 

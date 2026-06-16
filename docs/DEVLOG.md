@@ -5,6 +5,26 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — `core::Error` rendu RT-safe (caveat levé)
+
+### Changement
+- `core::Error::message` passe de `std::string` à **`std::string_view`** sur des
+  littéraux statiques. Produire une erreur n'alloue plus rien.
+- `LooperTrack` : les messages de transition refusée, auparavant construits par
+  concaténation (`std::string`), sont désormais des **littéraux statiques** par
+  transition (plus précis, et sans allocation).
+- Conséquence : le drain de la file de commandes dans `LooperEngine::process()`
+  est maintenant **100 % sans allocation**, y compris pour une commande invalide.
+  Le caveat temps réel documenté précédemment est levé.
+
+### Vérifié
+- Build + ASan/UBSan, `clang-format`, `clang-tidy` : verts.
+- Tests inchangés (63), + assertion que le message d'erreur statique est bien
+  renseigné. Tous les appels à `failure(...)` passent des littéraux (lifetime
+  statique garanti pour la `string_view`).
+
+---
+
 ## 2026-06-16 — Assemblage moteur : `LooperEngine` + pont `Project`
 
 ### Livré

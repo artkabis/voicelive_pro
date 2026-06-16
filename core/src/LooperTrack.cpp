@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: MIT
 #include "voicelive/core/LooperTrack.hpp"
 
-#include <string>
-
 #include "voicelive/core/Result.hpp"
 
 namespace voicelive::core {
@@ -23,20 +21,12 @@ const char* toString(TrackState state) noexcept {
     return "Unknown";
 }
 
-namespace {
-
-/// Fabrique un échec de transition au message homogène et exploitable.
-Status invalidTransition(const char* action, TrackState from) {
-    return Status::failure(ErrorCode::InvalidTransition,
-                           std::string{"Transition interdite : '"} + action +
-                               "' impossible depuis l'état " + toString(from));
-}
-
-}  // namespace
-
+// Messages d'erreur STATIQUES (littéraux) : aucune allocation, donc une
+// transition refusée peut être produite sur le thread audio sans danger.
 Status LooperTrack::record() {
     if (state_ != TrackState::Empty) {
-        return invalidTransition("record", state_);
+        return Status::failure(ErrorCode::InvalidTransition,
+                               "record interdit : la piste n'est pas vide");
     }
     state_ = TrackState::Recording;
     return Status::success();
@@ -44,7 +34,8 @@ Status LooperTrack::record() {
 
 Status LooperTrack::finishRecording() {
     if (state_ != TrackState::Recording) {
-        return invalidTransition("finishRecording", state_);
+        return Status::failure(ErrorCode::InvalidTransition,
+                               "finishRecording interdit : aucun enregistrement en cours");
     }
     state_ = TrackState::Playing;
     return Status::success();
@@ -52,7 +43,8 @@ Status LooperTrack::finishRecording() {
 
 Status LooperTrack::play() {
     if (state_ != TrackState::Stopped) {
-        return invalidTransition("play", state_);
+        return Status::failure(ErrorCode::InvalidTransition,
+                               "play interdit : aucun contenu arrêté à relire");
     }
     state_ = TrackState::Playing;
     return Status::success();
@@ -67,14 +59,16 @@ Status LooperTrack::stop() {
             return Status::success();
         case TrackState::Empty:
         case TrackState::Stopped:
-            return invalidTransition("stop", state_);
+            break;
     }
-    return invalidTransition("stop", state_);
+    return Status::failure(ErrorCode::InvalidTransition,
+                           "stop interdit : la piste n'est ni en lecture ni en enregistrement");
 }
 
 Status LooperTrack::startOverdub() {
     if (state_ != TrackState::Playing) {
-        return invalidTransition("startOverdub", state_);
+        return Status::failure(ErrorCode::InvalidTransition,
+                               "startOverdub interdit : la piste n'est pas en lecture");
     }
     state_ = TrackState::Overdubbing;
     return Status::success();
@@ -82,7 +76,8 @@ Status LooperTrack::startOverdub() {
 
 Status LooperTrack::stopOverdub() {
     if (state_ != TrackState::Overdubbing) {
-        return invalidTransition("stopOverdub", state_);
+        return Status::failure(ErrorCode::InvalidTransition,
+                               "stopOverdub interdit : aucun overdub en cours");
     }
     state_ = TrackState::Playing;
     return Status::success();

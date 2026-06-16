@@ -12,7 +12,7 @@
 
 #include <cstdint>
 #include <optional>
-#include <string>
+#include <string_view>
 #include <utility>
 #include <variant>
 
@@ -27,9 +27,14 @@ enum class ErrorCode : std::uint8_t {
 };
 
 /// Erreur métier : un code exploitable par le programme + un message humain.
+///
+/// `message` est une `string_view` : elle doit toujours pointer sur une chaîne à
+/// durée de vie statique (littéral). C'est ce qui rend `Error` sans allocation —
+/// indispensable pour qu'une erreur puisse être produite sur le thread audio
+/// (ex. transition refusée drainée depuis la file de commandes).
 struct Error {
     ErrorCode code;
-    std::string message;
+    std::string_view message;
 };
 
 /// Résultat d'une opération qui ne renvoie pas de valeur (succès ou erreur).
@@ -40,7 +45,7 @@ public:
     Status() noexcept = default;
 
     /// Construit un statut d'échec.
-    explicit Status(Error error) : error_(std::move(error)) {}
+    explicit Status(Error error) : error_(error) {}
 
     [[nodiscard]] bool ok() const noexcept { return !error_.has_value(); }
     explicit operator bool() const noexcept { return ok(); }
@@ -50,8 +55,8 @@ public:
     [[nodiscard]] const Error& error() const { return *error_; }
 
     static Status success() noexcept { return Status{}; }
-    static Status failure(ErrorCode code, std::string message) {
-        return Status{Error{code, std::move(message)}};
+    static Status failure(ErrorCode code, std::string_view message) noexcept {
+        return Status{Error{code, message}};
     }
 
 private:
@@ -62,8 +67,8 @@ private:
 template <typename T>
 class [[nodiscard]] Result {
 public:
-    Result(T value) : data_(std::move(value)) {}      // NOLINT(google-explicit-constructor)
-    Result(Error error) : data_(std::move(error)) {}  // NOLINT(google-explicit-constructor)
+    Result(T value) : data_(std::move(value)) {}  // NOLINT(google-explicit-constructor)
+    Result(Error error) : data_(error) {}         // NOLINT(google-explicit-constructor)
 
     [[nodiscard]] bool ok() const noexcept { return std::holds_alternative<T>(data_); }
     explicit operator bool() const noexcept { return ok(); }
@@ -76,8 +81,8 @@ public:
     /// Précondition : `!ok()`.
     [[nodiscard]] const Error& error() const { return std::get<Error>(data_); }
 
-    static Result failure(ErrorCode code, std::string message) {
-        return Result{Error{code, std::move(message)}};
+    static Result failure(ErrorCode code, std::string_view message) {
+        return Result{Error{code, message}};
     }
 
 private:
