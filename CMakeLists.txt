@@ -21,6 +21,9 @@ endif()
 option(VOICELIVE_BUILD_TESTS "Compiler les tests unitaires du cœur" ON)
 option(VOICELIVE_WARNINGS_AS_ERRORS "Traiter les warnings comme des erreurs" ON)
 option(VOICELIVE_ENABLE_SANITIZERS "Activer ASan/UBSan" OFF)
+# L'app JUCE récupère JUCE via le réseau et nécessite les libs système (X11,
+# ALSA…). Désactivée par défaut pour garder le build du cœur autonome.
+option(VOICELIVE_BUILD_APP "Compiler l'application desktop JUCE" OFF)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(CompilerWarnings)
@@ -41,3 +44,8 @@ endif()
 add_subdirectory(core)
 add_subdirectory(dsp)
 add_subdirectory(engine)
+
+# Couche application JUCE (desktop / mobile) — opt-in.
+if(VOICELIVE_BUILD_APP)
+    add_subdirectory(app)
+endif()

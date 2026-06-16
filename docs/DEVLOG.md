@@ -64,6 +64,39 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étape 5 : couche application JUCE (desktop)
+
+### Livré
+- **`engine/ChannelUtils`** (testé, sans JUCE) : `downmixToMono` et
+  `spreadToChannels` — conversion buffers multicanaux ↔ mono du moteur. Isolé
+  ici pour que le câblage JUCE reste une fine couche non testée.
+- **`app/` (JUCE)** : `MainComponent` (= `AudioAppComponent`) qui ouvre l'audio
+  (2 in/2 out), convertit stéréo→mono, appelle `LooperEngine::process`,
+  ré-étale en sortie ; UI minimale de transport (piste 1) déposant des commandes
+  dans la file lock-free. `Main.cpp` : fenêtre/application JUCE.
+- **CMake** : option `VOICELIVE_BUILD_APP` (OFF par défaut) ; l'app récupère
+  JUCE 8.0.4 via FetchContent. Le build du cœur reste autonome et inchangé.
+- **CI** : job `app-desktop` (Linux) compilant `VoiceLiveApp` et publiant
+  l'exécutable en artefact.
+- Docs : `app/README.md` (build desktop + plan Android/APK).
+
+### Tests (+5 ChannelUtils, total projet : 77, 100 % verts)
+- ChannelUtils : downmix moyenne/silence, spread multi-canaux, canaux nuls,
+  aller-retour mono↔stéréo.
+
+### Important — limites de l'environnement
+- La couche `app/` **n'est pas compilée ici** (pas de JUCE ni de libs système
+  dans le sandbox distant) : elle est vérifiée par la CI. La logique vérifiable
+  (conversion de canaux + moteur) est, elle, testée à 100 %.
+
+### Prochaines étapes
+1. CI Android : JDK + SDK/NDK + JUCE → **APK** en artefact (debug-signé pour
+   sideload), puis signature release.
+2. Insertion d'effets via la file de commandes (effets pilotés en RT).
+3. UI : contrôles multi-pistes, niveaux, sélection d'effets.
+
+---
+
 ## 2026-06-16 — Étape 4 : chaîne d'effets par piste + 2ᵉ effet
 
 ### Livré
