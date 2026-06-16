@@ -27,6 +27,7 @@ core::Status LooperEngine::prepare(core::SampleRate sampleRate, std::size_t trac
     for (TrackProcessor& processor : tracks_) {
         processor.prepare(sampleRate, loopCapacity, maxBlockSize);
     }
+    metronome_.prepare(sampleRate, maxBlockSize);
     scratch_.assign(maxBlockSize, 0.0F);
     selected_ = 0;
     return core::Status::success();
@@ -90,6 +91,7 @@ void LooperEngine::process(std::span<float> output, std::span<const float> input
         processor.process(scratch, input);
         mixer::addScaled(mixTarget, scratch, 1.0F);
     }
+    metronome_.process(mixTarget, transport_);
     mixer::limit(output);
 }
 

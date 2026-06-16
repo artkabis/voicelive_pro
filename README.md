@@ -64,6 +64,8 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 - Conversions **temps musical ↔ échantillons** (samples/temps, samples/mesure).
 - **Quantification** au temps ou à la mesure.
 - **Alignement de boucle** sur multiples musicaux (¼ / ½ / 1× / 2× / 4×).
+- **Métronome** (`engine`) : clic temps réel, accent sur le 1er temps, mixé à la
+  sortie ; activable/désactivable, gain réglable.
 
 ### 🎚️ Effets (`dsp`)
 - **Reverb** (algorithme Freeverb : 8 combs + 4 allpass).

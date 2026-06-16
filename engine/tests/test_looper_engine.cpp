@@ -2,7 +2,9 @@
 //
 // Tests du moteur assemblé : configuration, contrôle synchrone et via la file
 // de commandes lock-free, mixage multi-pistes, et pont avec core::Project.
+#include <algorithm>
 #include <array>
+#include <cmath>
 #include <memory>
 #include <vector>
 
@@ -134,6 +136,24 @@ TEST(LooperEngine, apply_reglages_depuis_project) {
     CHECK(engine.name() == "Session B");
     CHECK(engine.transport().bpm().value() == 90.0);
     CHECK(engine.track(0)->track().isMuted());
+}
+
+TEST(LooperEngine, metronome_se_mixe_dans_la_sortie) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+    engine.setMetronomeEnabled(true);
+    CHECK(engine.isMetronomeEnabled());
+
+    // Aucune piste enregistrée : la seule source de son est le métronome.
+    const std::array<float, 64> silence{};
+    std::vector<float> output(64, 0.0F);
+    engine.process(output, silence);
+
+    float peak = 0.0F;
+    for (const float sample : output) {
+        peak = std::max(peak, std::abs(sample));
+    }
+    CHECK(peak > 0.0F);  // un clic est présent au premier temps
 }
 
 TEST(LooperEngine, chaine_d_effets_par_piste) {

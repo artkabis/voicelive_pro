@@ -64,6 +64,33 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étape 7 : métronome (priorité fonctionnelle n°1)
+
+### Livré
+- **`engine/Metronome`** : générateur de clics temps réel piloté par le
+  `Transport`. Clic à chaque temps, **accent sur le 1er temps** de la mesure,
+  enveloppe exponentielle ; tout pré-dimensionné en `prepare()`, `process()`
+  sans allocation (ajoute les clics au bloc → se mixe avec les pistes).
+- Intégré à **`LooperEngine`** : `setMetronomeEnabled` / `setMetronomeGain`,
+  mixé dans `process()` avant le limiteur.
+
+### Tests (+5, total : 82)
+- Désactivé → silence ; clic au 1er temps ; clics espacés d'un temps (silence
+  en milieu de temps) ; **accent du 1er temps > temps normal** ; intégration
+  moteur (clic présent sans aucune piste).
+
+### CI Android (en parallèle)
+- Itérations successives via les logs : X11 → langage C → chemins de modules →
+  dépendances. `--fix-missing-dependencies` n'existe pas en Projucer 8.0.4 →
+  remplacé par la déclaration explicite du module `juce_gui_extra` dans le
+  `.jucer`.
+
+### Prochaines priorités
+2. Synchronisation des boucles (piste maître + alignement).
+3. Sauvegarde/chargement de projet (sérialisation disque).
+
+---
+
 ## 2026-06-16 — Étape 6 : pipeline CI Android (APK)
 
 ### Livré

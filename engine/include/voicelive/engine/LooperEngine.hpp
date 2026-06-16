@@ -23,6 +23,7 @@
 #include "voicelive/core/Project.hpp"
 #include "voicelive/core/Result.hpp"
 #include "voicelive/core/Transport.hpp"
+#include "voicelive/engine/Metronome.hpp"
 #include "voicelive/engine/RingBuffer.hpp"
 #include "voicelive/engine/TrackProcessor.hpp"
 
@@ -94,6 +95,11 @@ public:
     }
     core::Status selectTrack(std::size_t i) { return applyCommand({Cmd::SelectTrack, i}); }
 
+    // --- Métronome --------------------------------------------------------
+    [[nodiscard]] bool isMetronomeEnabled() const noexcept { return metronome_.isEnabled(); }
+    void setMetronomeEnabled(bool enabled) noexcept { metronome_.setEnabled(enabled); }
+    void setMetronomeGain(core::Gain gain) noexcept { metronome_.setGain(gain); }
+
     /// Dépose une commande pour le thread audio (lock-free). false si plein.
     bool post(const EngineCommand& command) noexcept { return commands_.push(command); }
 
@@ -111,6 +117,7 @@ private:
 
     std::vector<TrackProcessor> tracks_;
     core::Transport transport_;
+    Metronome metronome_;
     std::string name_;
     std::size_t selected_ = 0;
     std::vector<float> scratch_;  // buffer de rendu par piste (taille maxBlock)

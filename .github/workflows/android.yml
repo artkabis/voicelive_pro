@@ -64,9 +64,6 @@ jobs:
           PROJUCER="$(find juce-build -name Projucer -type f -perm -u+x | head -1)"
           echo "Projucer: $PROJUCER"
           "$PROJUCER" --set-global-search-path linux defaultJuceModulePath "$PWD/juce/modules"
-          # Ajoute les modules JUCE manquants par dépendance (ex. gui_extra tiré
-          # par audio_processors), puis exporte le projet Android Studio.
-          "$PROJUCER" --fix-missing-dependencies VoiceLivePro.jucer
           "$PROJUCER" --resave VoiceLivePro.jucer
 
       - name: Build Gradle (assembleDebug)

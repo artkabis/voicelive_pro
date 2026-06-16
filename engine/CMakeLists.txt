@@ -6,6 +6,7 @@ add_library(voicelive_engine
     src/Mixer.cpp
     src/LooperEngine.cpp
     src/ChannelUtils.cpp
+    src/Metronome.cpp
 )
 add_library(voicelive::engine ALIAS voicelive_engine)
 
@@ -26,6 +27,7 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_track_processor.cpp
         tests/test_looper_engine.cpp
         tests/test_channel_utils.cpp
+        tests/test_metronome.cpp
     )
     target_link_libraries(engine_tests PRIVATE voicelive::engine voicelive::testing)
 
