@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.24)
 project(VoiceLivePro
     VERSION 2.0.0
     DESCRIPTION "Moteur audio temps réel multiplateforme (desktop / mobile / web)"
-    LANGUAGES CXX)
+    LANGUAGES C CXX)  # C requis par JUCE (modules audio/graphics en C)
 
 # --- Standard & politiques ---------------------------------------------------
 set(CMAKE_CXX_STANDARD 20)

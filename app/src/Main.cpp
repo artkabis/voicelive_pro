@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 //
 // Point d'entrée JUCE : application desktop hébergeant MainComponent.
-#include <juce_gui_extra/juce_gui_extra.h>
+#include <juce_gui_basics/juce_gui_basics.h>
 
 #include <memory>
 

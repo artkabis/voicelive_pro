@@ -58,7 +58,6 @@
         <MODULEPATH id="juce_events" path="../../juce/modules"/>
         <MODULEPATH id="juce_graphics" path="../../juce/modules"/>
         <MODULEPATH id="juce_gui_basics" path="../../juce/modules"/>
-        <MODULEPATH id="juce_gui_extra" path="../../juce/modules"/>
       </MODULEPATHS>
     </ANDROIDSTUDIO>
   </EXPORTFORMATS>
@@ -73,6 +72,5 @@
     <MODULE id="juce_events" showAllCode="1" useLocalCopy="0" useGlobalPath="0"/>
     <MODULE id="juce_graphics" showAllCode="1" useLocalCopy="0" useGlobalPath="0"/>
     <MODULE id="juce_gui_basics" showAllCode="1" useLocalCopy="0" useGlobalPath="0"/>
-    <MODULE id="juce_gui_extra" showAllCode="1" useLocalCopy="0" useGlobalPath="0"/>
   </MODULES>
 </JUCERPROJECT>
