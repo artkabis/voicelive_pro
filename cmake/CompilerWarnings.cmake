@@ -16,7 +16,10 @@ function(voicelive_set_target_warnings target)
         -Wcast-align
         -Wunused
         -Woverloaded-virtual
-        -Wnull-dereference
+        # -Wnull-dereference : volontairement absent. Faux positifs en build
+        # optimisé sur les accesseurs renvoyant un pointeur borné (raison pour
+        # laquelle GCC l'exclut de -Wall/-Wextra). La sûreté null est couverte
+        # par ASan/UBSan + clang-tidy.
         -Wdouble-promotion
         -Wformat=2
         -Wimplicit-fallthrough

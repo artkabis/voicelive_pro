@@ -24,18 +24,20 @@ jobs:
             | xargs clang-format-18 --dry-run --Werror
 
   build-test:
-    name: Build + Tests (${{ matrix.compiler }})
+    name: Build + Tests (${{ matrix.compiler }}, ${{ matrix.build_type }})
     runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
         compiler: [g++, clang++]
+        build_type: [Debug, Release]
     steps:
       - uses: actions/checkout@v4
       - name: Configurer
         env:
           CXX: ${{ matrix.compiler }}
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DVOICELIVE_WARNINGS_AS_ERRORS=ON
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+             -DVOICELIVE_WARNINGS_AS_ERRORS=ON
       - name: Compiler
         run: cmake --build build -j
       - name: Tests
