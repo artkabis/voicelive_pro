@@ -40,8 +40,8 @@ rien — c'est ce qui le rend compilable en WASM et testable sans matériel audi
 
 | Couche   | État        | Contenu                                              |
 |----------|-------------|------------------------------------------------------|
-| `core/`  | 🟢 amorcé   | `LooperTrack` (machine à états), types `Gain`/`SampleRate`, `Result/Status` |
-| `dsp/`   | ⚪ à venir  | Portage des effets en C++ pur (ou via Faust)         |
+| `core/`  | 🟢 en cours | `LooperTrack`, `Transport` (tempo/quantif.), `Project`, types forts, `Result/Status` |
+| `dsp/`   | 🟢 amorcé   | Interface `Effect` (contrat temps réel) + `Reverb` (Freeverb) en C++ pur |
 | `engine/`| ⚪ à venir  | Boucle audio temps-réel, mixage, sync                |
 | `app/`   | ⚪ à venir  | Intégration JUCE (desktop/mobile) + shell web WASM   |
 

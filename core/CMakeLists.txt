@@ -6,6 +6,7 @@
 
 add_library(voicelive_core
     src/LooperTrack.cpp
+    src/Transport.cpp
 )
 add_library(voicelive::core ALIAS voicelive_core)
 
@@ -23,9 +24,10 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_main.cpp
         tests/test_looper_track.cpp
         tests/test_audio_params.cpp
+        tests/test_transport.cpp
+        tests/test_project.cpp
     )
-    target_link_libraries(core_tests PRIVATE voicelive::core)
-    target_include_directories(core_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/tests)
+    target_link_libraries(core_tests PRIVATE voicelive::core voicelive::testing)
 
     voicelive_set_target_warnings(core_tests)
     voicelive_enable_sanitizers(core_tests)

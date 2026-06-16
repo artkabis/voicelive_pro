@@ -32,5 +32,10 @@ endif()
 
 # --- Modules -----------------------------------------------------------------
 # `core` : logique métier pure C++, zéro dépendance, compile natif ET WASM.
-# Les couches `dsp`, `engine`, `app` (JUCE) viendront s'appuyer dessus.
+# `dsp`  : effets temps réel en C++ pur (s'appuie sur les types de `core`).
+# Les couches `engine`, `app` (JUCE) viendront ensuite.
+if(VOICELIVE_BUILD_TESTS)
+    add_subdirectory(testing)
+endif()
 add_subdirectory(core)
+add_subdirectory(dsp)

@@ -27,6 +27,10 @@ public:
         return SampleRate{hz};
     }
 
+    /// Fabriques des valeurs usuelles (toujours valides, sans `Result`).
+    static SampleRate cd() noexcept { return SampleRate{kCd}; }
+    static SampleRate studio() noexcept { return SampleRate{kStudio}; }
+
     [[nodiscard]] unsigned hz() const noexcept { return hz_; }
 
     friend bool operator==(SampleRate lhs, SampleRate rhs) noexcept { return lhs.hz_ == rhs.hz_; }

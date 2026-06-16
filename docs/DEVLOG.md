@@ -5,6 +5,47 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étapes 1 & 2 : transport, projet, premier effet DSP
+
+### Livré
+- **`core/` — Transport musical** (`Transport.hpp/.cpp`) :
+  - `Bpm` (clampé 20–999) et `TimeSignature` (dénominateur puissance de deux).
+  - Conversions temps↔échantillons (`samplesPerBeat`/`samplesPerBar`).
+  - Quantification : `quantizeToGrid` (au temps/à la mesure) et
+    `chooseLoopMultiple` (alignement ¼/½/1×/2×/4× sur une boucle de référence —
+    reprend la logique d'auto-sync de la v1, désormais pure et testée).
+- **`core/` — Modèle de projet** (`Project.hpp`) : agrège transport + N pistes
+  (1–8) bornées, piste sélectionnée gardée, accès aux pistes borné (jamais d'UB).
+- **`dsp/` — nouveau module** :
+  - `Effect` : interface au **contrat temps réel strict** (alloc en `prepare`,
+    `process` `noexcept` sans allocation).
+  - `Reverb` : Freeverb (8 combs + 4 allpass) en C++ pur, buffers alloués une
+    fois, échelonnés à la fréquence d'échantillonnage.
+- **Framework de test mutualisé** : déplacé en lib partagée
+  `voicelive::testing` (+ macro `CHECK_NEAR` pour le DSP).
+- `Result<T>` : ajout d'un accès mutable par référence (`value() &`) — évite les
+  copies inutiles de la valeur transportée.
+
+### Tests (36 au total, 100 % verts)
+- Transport : conversions, tempo, quantification, multiples de boucle.
+- Project : création validée, bornes, sélection gardée, indépendance des pistes.
+- Reverb : passthrough dry pur, silence→silence, paramètres clampés,
+  **réponse impulsionnelle décroissante** (queue stable, jamais de NaN/Inf),
+  `reset` efface la queue.
+
+### Vérifié localement (`scripts/check.sh`)
+- Build g++ + sanitizers ASan/UBSan : OK.
+- `ctest` : 2 suites, 36/36 cas verts.
+- `clang-format` + `clang-tidy` strict : 0 erreur.
+
+### Prochaines étapes
+1. `engine/` : squelette de boucle audio temps réel (mixage N pistes, ring
+   buffer lock-free) respectant les 4 contrats RT, testable sans matériel.
+2. `dsp/` : 2e effet (delay/wah) sur la même interface `Effect`.
+3. Intégration JUCE (desktop) puis cible WASM (web).
+
+---
+
 ## 2026-06-16 — Amorçage de la fondation v2
 
 ### Décisions

@@ -8,6 +8,7 @@
 // fera par simple remplacement de ce header, sans toucher aux tests.
 #pragma once
 
+#include <cmath>
 #include <cstddef>
 #include <functional>
 #include <iostream>
@@ -93,4 +94,17 @@ inline int runAll() {
             std::cout << "  REQUIRE échec : " #cond "  (" << __FILE__ << ":" << __LINE__ << ")\n"; \
             throw ::vltest::AbortTest{};                                                           \
         }                                                                                          \
+    } while (false)
+
+/// Égalité approchée pour les comparaisons flottantes (DSP).
+#define CHECK_NEAR(actual, expected, tol)                                                       \
+    do {                                                                                        \
+        const double vl_a = static_cast<double>(actual);                                        \
+        const double vl_e = static_cast<double>(expected);                                      \
+        if (!(std::abs(vl_a - vl_e) <= (tol))) {                                                \
+            ++::vltest::currentFailures();                                                      \
+            std::cout << "  CHECK_NEAR échec : " #actual " ≈ " #expected " (" << vl_a << " vs " \
+                      << vl_e << ", tol " << (tol) << ")  (" << __FILE__ << ":" << __LINE__     \
+                      << ")\n";                                                                 \
+        }                                                                                       \
     } while (false)

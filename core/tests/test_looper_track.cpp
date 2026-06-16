@@ -3,8 +3,8 @@
 // Couverture exhaustive de la machine à états LooperTrack : on vérifie chaque
 // transition valide ET on prouve que chaque transition interdite est rejetée
 // sans muter l'état (le contrat « impossible d'atteindre un état incohérent »).
-#include "testing.hpp"
 #include "voicelive/core/LooperTrack.hpp"
+#include "voicelive_testing/testing.hpp"
 
 using voicelive::core::ErrorCode;
 using voicelive::core::Gain;

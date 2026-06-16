@@ -68,8 +68,10 @@ public:
     [[nodiscard]] bool ok() const noexcept { return std::holds_alternative<T>(data_); }
     explicit operator bool() const noexcept { return ok(); }
 
-    /// Précondition : `ok()`.
-    [[nodiscard]] const T& value() const { return std::get<T>(data_); }
+    /// Précondition : `ok()`. Accès à la valeur (mutable sur un `Result` lvalue,
+    /// constant sinon) — évite toute copie inutile de la valeur transportée.
+    [[nodiscard]] T& value() & { return std::get<T>(data_); }
+    [[nodiscard]] const T& value() const& { return std::get<T>(data_); }
 
     /// Précondition : `!ok()`.
     [[nodiscard]] const Error& error() const { return std::get<Error>(data_); }
