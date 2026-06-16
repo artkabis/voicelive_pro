@@ -11,7 +11,7 @@ CLANG_TIDY="${CLANG_TIDY:-clang-tidy}"
 BUILD_DIR="build"
 
 echo "▶ 1/4  Formatage (clang-format)"
-mapfile -t SOURCES < <(find core \( -name '*.cpp' -o -name '*.hpp' \))
+mapfile -t SOURCES < <(find core dsp engine testing \( -name '*.cpp' -o -name '*.hpp' \))
 "$CLANG_FORMAT" --dry-run --Werror "${SOURCES[@]}"
 
 echo "▶ 2/4  Configuration + compilation (warnings = erreurs, sanitizers ON)"
@@ -23,6 +23,6 @@ echo "▶ 3/4  Tests unitaires (instrumentés ASan/UBSan)"
 ctest --test-dir "$BUILD_DIR" --output-on-failure
 
 echo "▶ 4/4  Analyse statique (clang-tidy)"
-find core -name '*.cpp' -print0 | xargs -0 -I{} "$CLANG_TIDY" -p "$BUILD_DIR" {}
+find core dsp engine -name '*.cpp' -print0 | xargs -0 -I{} "$CLANG_TIDY" -p "$BUILD_DIR" {}
 
 echo "✅ Toutes les portes sont vertes."

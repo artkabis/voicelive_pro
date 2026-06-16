@@ -20,7 +20,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Vérifier le formatage
         run: |
-          find core -name '*.cpp' -o -name '*.hpp' \
+          find core dsp engine testing -name '*.cpp' -o -name '*.hpp' \
             | xargs clang-format-18 --dry-run --Werror
 
   build-test:
@@ -62,5 +62,5 @@ jobs:
         run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
       - name: clang-tidy
         run: |
-          find core -name '*.cpp' \
+          find core dsp engine -name '*.cpp' \
             | xargs -I{} clang-tidy-18 -p build {}

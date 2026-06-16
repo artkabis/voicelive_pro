@@ -5,6 +5,45 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étape 3 : squelette du moteur temps réel (`engine/`)
+
+### Livré (nouveau module `engine/`, dépend uniquement de `core`)
+- **`RingBuffer<T>`** : file SPSC lock-free (canal UI → thread audio sans
+  verrou) — application directe du contrat « aucun verrou en temps réel ».
+- **`LoopAudio`** : stockage mono de boucle à capacité fixe ; mémoire allouée
+  une seule fois dans `prepare()`, opérations temps réel (`append`/`readLooped`/
+  `overdub`) sans allocation.
+- **`Mixer`** : sommation pondérée (`addScaled`) + limiteur dur (`limit`),
+  fonctions `noexcept` sans allocation.
+- **`TrackProcessor`** : relie l'état métier (`core::LooperTrack`) aux données
+  audio + tête de lecture. Les transitions encapsulent état ET audio pour
+  garantir leur cohérence ; `process()` rend un bloc selon l'état
+  (enregistrement / lecture bouclée / overdub / silence).
+
+### Tests (20 nouveaux, total projet : 56, 100 % verts)
+- RingBuffer : FIFO, plein/vide, wraparound.
+- LoopAudio : capacité bornée, lecture bouclée, overdub, clear.
+- Mixer : accumulation, mixage multi-sources, limiteur.
+- TrackProcessor (intégration) : capture, lecture bouclée, gain/mute, overdub,
+  stop, et **mixage de deux pistes** de bout en bout.
+
+### Outillage
+- `scripts/check.sh` et la CI couvrent désormais `core` + `dsp` + `engine`
+  (format + clang-tidy), au lieu de `core` seul.
+
+### Note d'architecture
+- `engine::TrackProcessor` possède aujourd'hui sa propre `LooperTrack`. La
+  réconciliation avec `core::Project` (qui modélise aussi les pistes) sera
+  traitée lors de l'assemblage du moteur de haut niveau.
+
+### Prochaines étapes
+1. Assemblage moteur : `LooperEngine` (N `TrackProcessor` + `Transport` partagé,
+   file de commandes via `RingBuffer`) et réconciliation avec `Project`.
+2. `dsp/` : 2e effet (delay/wah) sur l'interface `Effect`, insérable par piste.
+3. Intégration JUCE (desktop) puis cible WASM (web).
+
+---
+
 ## 2026-06-16 — Étapes 1 & 2 : transport, projet, premier effet DSP
 
 ### Livré

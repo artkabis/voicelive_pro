@@ -31,11 +31,13 @@ if(VOICELIVE_BUILD_TESTS)
 endif()
 
 # --- Modules -----------------------------------------------------------------
-# `core` : logique métier pure C++, zéro dépendance, compile natif ET WASM.
-# `dsp`  : effets temps réel en C++ pur (s'appuie sur les types de `core`).
-# Les couches `engine`, `app` (JUCE) viendront ensuite.
+# `core`   : logique métier pure C++, zéro dépendance, compile natif ET WASM.
+# `dsp`    : effets temps réel en C++ pur (s'appuie sur les types de `core`).
+# `engine` : briques temps réel (ring buffer, boucles, mixage, processeur).
+# La couche `app` (JUCE / shell web WASM) viendra ensuite.
 if(VOICELIVE_BUILD_TESTS)
     add_subdirectory(testing)
 endif()
 add_subdirectory(core)
 add_subdirectory(dsp)
+add_subdirectory(engine)
