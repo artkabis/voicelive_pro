@@ -55,13 +55,28 @@ JUCE AudioAppComponent (MainComponent)
 Seul ce câblage dépend de JUCE ; la conversion de canaux et tout le moteur sont
 testés sans JUCE.
 
-## Android / APK (prochaine étape)
+## Android / APK
 
-JUCE compile le même code vers Android. Le pipeline cible :
-1. CI dédiée (JDK + Android SDK/NDK + JUCE) compilant un **APK** publié en artefact.
-2. APK **debug-signé** pour sideload (test direct sur appareil).
-3. Signature **release** (keystore) pour une distribution Play Store — nécessite
-   un compte Google Play Developer.
+Le même code compile vers Android via le chemin officiel JUCE :
+**Projucer exporte un projet Android Studio → Gradle compile l'APK.**
 
-> L'APK ne peut pas être produit dans l'environnement de dev distant (pas de
-> NDK) : il sera généré par la CI.
+- Projet Projucer : [`VoiceLivePro.jucer`](../VoiceLivePro.jucer) (à la racine).
+- CI : [`.github/workflows/android.yml`](../.github/workflows/android.yml) —
+  installe JDK 17 + SDK/NDK, construit le Projucer, exporte `Builds/Android`,
+  lance `./gradlew assembleDebug`, publie l'**APK debug** en artefact.
+- Déclenchement : automatique (push touchant `app/`, le cœur ou le `.jucer`) ou
+  manuel (`workflow_dispatch`).
+
+Récupérer l'APK : onglet **Actions → run « Android APK » → artefact
+`VoiceLivePro-debug-apk`**, puis sideload sur l'appareil (sources inconnues
+activées).
+
+> ⚠️ **Itération 1.** Le build Android dépend de versions précises (NDK, Gradle,
+> build-tools) et d'options JUCE Android ; atteindre un APK vert demande en
+> général quelques ajustements **sur le runner CI réel** (impossible à vérifier
+> dans le sandbox de dev). La logique métier/DSP/conversion, elle, est testée.
+
+### Vers la « production »
+- L'APK ci-dessus est **debug-signé** → suffisant pour tester sur ton téléphone.
+- Pour le Play Store : signature **release** (keystore) + compte Google Play
+  Developer. Le keystore se branche en secret CI (`ANDROID_KEYSTORE_*`).

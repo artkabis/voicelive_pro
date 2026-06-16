@@ -64,6 +64,31 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étape 6 : pipeline CI Android (APK)
+
+### Livré
+- **`VoiceLivePro.jucer`** : projet Projucer (guiapp, C++20) regroupant les
+  sources core/dsp/engine/app + modules JUCE + exporter Android Studio
+  (minSDK 24, targetSDK 34) avec les chemins d'en-têtes du cœur.
+- **`.github/workflows/android.yml`** : CI Android par le chemin officiel JUCE —
+  JDK 17 + SDK/NDK, build du Projucer, `--resave` du `.jucer` → `Builds/Android`,
+  `gradlew assembleDebug`, publication de l'**APK debug** en artefact.
+- Doc `app/README.md` : récupération de l'APK, sideload, et signature release.
+
+### Honnêteté / limites
+- Ce pipeline est une **itération 1** : non vérifiable dans le sandbox (pas de
+  NDK/JUCE). Les builds JUCE Android demandent typiquement quelques ajustements
+  de versions (NDK/Gradle/build-tools) **sur le runner réel**. La boucle vers un
+  APK vert nécessite de lire les logs CI — d'où l'intérêt d'autoriser l'accès
+  GitHub pour itérer rapidement.
+
+### Prochaines étapes
+1. Faire tourner la CI Android, lire les logs, corriger jusqu'au vert (APK).
+2. Signature release (keystore en secret CI) pour distribution.
+3. UI multi-pistes + effets pilotés en temps réel.
+
+---
+
 ## 2026-06-16 — Étape 5 : couche application JUCE (desktop)
 
 ### Livré

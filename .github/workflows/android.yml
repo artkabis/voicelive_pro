@@ -1,0 +1,72 @@
+# SPDX-License-Identifier: MIT
+# Construit un APK Android (debug) via le chemin officiel JUCE : Projucer
+# exporte un projet Android Studio, Gradle compile l'APK.
+#
+# ⚠️ Pipeline « itération 1 » : versions (NDK, Gradle, build-tools) et options
+# JUCE Android peuvent demander quelques ajustements sur le runner réel avant
+# d'obtenir un build vert. L'APK produit est debug-signé (sideload uniquement).
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ["claude/audio-recording-app-feasibility-g7nde9"]
+    paths:
+      - "app/**"
+      - "core/**"
+      - "dsp/**"
+      - "engine/**"
+      - "VoiceLivePro.jucer"
+      - ".github/workflows/android.yml"
+
+jobs:
+  apk:
+    name: Build APK (debug)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Composants SDK/NDK
+        run: |
+          yes | sdkmanager --install \
+            "platforms;android-34" \
+            "build-tools;34.0.0" \
+            "ndk;26.1.10909125" \
+            "cmake;3.22.1"
+
+      - name: Récupérer JUCE 8.0.4
+        run: git clone --depth 1 --branch 8.0.4 https://github.com/juce-framework/JUCE.git juce
+
+      - name: Construire le Projucer
+        run: |
+          cmake -S juce -B juce-build -DJUCE_BUILD_EXTRAS=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build juce-build --target Projucer -j"$(nproc)"
+
+      - name: Exporter le projet Android (Projucer)
+        run: |
+          PROJUCER="$(find juce-build -name Projucer -type f -perm -u+x | head -1)"
+          echo "Projucer: $PROJUCER"
+          "$PROJUCER" --set-global-search-path linux defaultJuceModulePath "$PWD/juce/modules"
+          "$PROJUCER" --resave VoiceLivePro.jucer
+
+      - name: Build Gradle (assembleDebug)
+        working-directory: Builds/Android
+        run: |
+          chmod +x ./gradlew || true
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Publier l'APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VoiceLivePro-debug-apk
+          path: Builds/Android/**/outputs/apk/**/*.apk
+          if-no-files-found: error
