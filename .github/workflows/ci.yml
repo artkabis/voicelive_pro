@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: MIT
+# Barrière CI : tout push / PR sur la branche de refonte doit passer ces portes.
+name: CI (core)
+
+on:
+  push:
+    branches: ["claude/audio-recording-app-feasibility-g7nde9", "main"]
+  pull_request:
+
+# Annule les exécutions précédentes encore en cours sur la même ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  format:
+    name: Format (clang-format)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérifier le formatage
+        run: |
+          find core -name '*.cpp' -o -name '*.hpp' \
+            | xargs clang-format-18 --dry-run --Werror
+
+  build-test:
+    name: Build + Tests (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurer
+        env:
+          CXX: ${{ matrix.compiler }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DVOICELIVE_WARNINGS_AS_ERRORS=ON
+      - name: Compiler
+        run: cmake --build build -j
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    name: Sanitizers (ASan + UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurer (sanitizers ON)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DVOICELIVE_ENABLE_SANITIZERS=ON
+      - name: Compiler
+        run: cmake --build build -j
+      - name: Tests instrumentés
+        run: ctest --test-dir build --output-on-failure
+
+  static-analysis:
+    name: Analyse statique (clang-tidy)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Générer la base de compilation
+        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: clang-tidy
+        run: |
+          find core -name '*.cpp' \
+            | xargs -I{} clang-tidy-18 -p build {}

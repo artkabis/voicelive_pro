@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+# Barrière locale : ces contrôles tournent avant chaque commit. Aucun code non
+# conforme n'entre dans l'historique.
+#   Installation :  pip install pre-commit && pre-commit install
+minimum_pre_commit_version: "3.0.0"
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=512]
+      - id: detect-private-key   # garde-fou sécurité : pas de clé privée commitée
+
+  - repo: https://github.com/pre-commit/mirrors-clang-format
+    rev: v18.1.3
+    hooks:
+      - id: clang-format
+        types_or: [c++, c]
+
+  # clang-tidy s'exécute en CI (nécessite la base de compilation) ; on le laisse
+  # hors du pre-commit pour ne pas ralentir chaque commit local.

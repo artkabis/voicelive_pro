@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: MIT
+# Config clang-tidy assouplie pour le code de TEST uniquement.
+# Le code de production (core/src, headers) reste soumis à la config stricte
+# racine. On désactive ici les seules règles incompatibles avec un framework
+# de test à base de macros et de cas auto-enregistrés.
+---
+InheritParentConfig: true
+Checks: >
+  -cppcoreguidelines-avoid-do-while,
+  -cppcoreguidelines-macro-usage,
+  -bugprone-empty-catch,
+  -cert-err58-cpp,
+  -misc-use-anonymous-namespace,
+  -misc-const-correctness,
+  -misc-include-cleaner,
+  -readability-function-cognitive-complexity
