@@ -5,6 +5,45 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Assemblage moteur : `LooperEngine` + pont `Project`
+
+### Livré
+- **`LooperEngine`** : assemblage de haut niveau du moteur temps réel.
+  - Possède N `TrackProcessor` + le `Transport` partagé (réutilise `core`, pas
+    de duplication de transport) + un nom + la piste sélectionnée.
+  - **File de commandes lock-free** (`RingBuffer<EngineCommand>`) : l'UI dépose
+    des commandes via `post()` (sans verrou) ; `process()` les draine côté thread
+    audio avant de rendre. Commande invalide = no-op sûr (l'état refuse sans muter).
+  - **Contrôle synchrone validé** (renvoie `Status`) pour les usages hors temps
+    réel et les tests : record/finish/play/stop/overdub/clear/gain/mute/select.
+  - **`process()`** : rend le mix complet (somme des pistes + limiteur) en une
+    passe, buffer de rendu pré-alloué, sans allocation.
+- **Réconciliation avec `core::Project`** : le moteur est l'autorité d'exécution,
+  `Project` est le modèle de **réglages persistés**. `exportSettings()` produit
+  un `Project` (nom, transport, gain/mute, sélection) ; `applySettings()` recharge
+  ces réglages dans le moteur. Round-trip testé.
+
+### Tests (+7, total projet : 63, 100 % verts)
+- Validation du nombre de pistes, rejet d'index invalide.
+- Cycle record→lecture, contrôle via la **file lock-free**, mixage de 2 pistes.
+- Export/Import des réglages `LooperEngine` ↔ `Project`.
+
+### Notes de conception
+- `LooperEngine` est volontairement **non déplaçable** (contient des atomics) :
+  un moteur audio ne se déplace pas une fois en service.
+- Caveat temps réel résiduel : une transition *invalide* drainée sur le thread
+  audio construit un message d'erreur `std::string` (allocation). Suivi : rendre
+  `core::Error` RT-safe (message en `std::string_view` sur littéraux statiques)
+  pour un chemin de commande 100 % sans allocation.
+
+### Prochaines étapes
+1. Rendre `core::Error` RT-safe (lever le caveat ci-dessus).
+2. `dsp/` : 2e effet (delay/wah) + insertion d'une chaîne d'effets par piste
+   dans `TrackProcessor`.
+3. Intégration JUCE (desktop) puis cible WASM (web).
+
+---
+
 ## 2026-06-16 — Étape 3 : squelette du moteur temps réel (`engine/`)
 
 ### Livré (nouveau module `engine/`, dépend uniquement de `core`)
