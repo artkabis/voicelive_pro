@@ -65,6 +65,10 @@ public:
     void setName(std::string name) { name_ = std::move(name); }
     [[nodiscard]] std::size_t selectedIndex() const noexcept { return selected_; }
 
+    /// Longueur de la boucle maître (0 = aucune piste n'a encore défini la
+    /// référence). Les pistes suivantes s'alignent sur un multiple de celle-ci.
+    [[nodiscard]] std::size_t masterLoopLength() const noexcept { return masterLength_; }
+
     /// Accès borné à une piste (jamais d'UB).
     [[nodiscard]] const TrackProcessor* track(std::size_t index) const noexcept {
         return index < tracks_.size() ? &tracks_[index] : nullptr;
@@ -115,12 +119,17 @@ private:
 
     core::Status applyCommand(const EngineCommand& command);
 
+    /// Fixe ou aligne la longueur de boucle d'une piste qui vient d'être
+    /// enregistrée : la 1ʳᵉ définit la référence, les suivantes s'y alignent.
+    void alignTrackLoop(TrackProcessor& processor);
+
     std::vector<TrackProcessor> tracks_;
     core::Transport transport_;
     Metronome metronome_;
     std::string name_;
     std::size_t selected_ = 0;
-    std::vector<float> scratch_;  // buffer de rendu par piste (taille maxBlock)
+    std::size_t masterLength_ = 0;  // longueur de la boucle maître (0 = aucune)
+    std::vector<float> scratch_;    // buffer de rendu par piste (taille maxBlock)
     RingBuffer<EngineCommand> commands_{64};
 };
 

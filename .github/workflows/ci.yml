@@ -13,6 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  jucer-sources:
+    name: Cohérence des sources (.jucer)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérifier que chaque source est déclarée dans le .jucer
+        run: ./scripts/check_jucer.sh
+
   format:
     name: Format (clang-format)
     runs-on: ubuntu-24.04

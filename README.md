@@ -55,6 +55,8 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 - **Machine à états de piste** stricte (Empty → Recording → Playing →
   Overdubbing → Stopped) : impossible d'atteindre un état incohérent.
 - **Multipiste** (1 à 8 pistes) avec mixage et limiteur de sortie.
+- **Synchronisation** : la 1ʳᵉ boucle définit la référence (maître), les
+  suivantes sont alignées sur un multiple musical (¼/½/1×/2×/4×).
 - **Enregistrement, lecture en boucle, overdub** (superposition de couches).
 - **Stockage de boucle à capacité fixe** (zéro allocation en temps réel).
 - **Gain & mute** par piste ; piste sélectionnée.

@@ -25,14 +25,18 @@ public:
     }
 
     /// Vide le contenu sans libérer la mémoire (réutilisable immédiatement).
-    void clear() noexcept { length_ = 0; }
+    void clear() noexcept {
+        length_ = 0;
+        loopLength_ = 0;
+    }
 
     [[nodiscard]] std::size_t capacity() const noexcept { return samples_.size(); }
     [[nodiscard]] std::size_t length() const noexcept { return length_; }
+    [[nodiscard]] std::size_t loopLength() const noexcept { return loopLength_; }
     [[nodiscard]] bool empty() const noexcept { return length_ == 0; }
 
     /// Ajoute des échantillons (enregistrement), borné par la capacité restante.
-    /// Renvoie le nombre réellement écrit.
+    /// Renvoie le nombre réellement écrit. La période de boucle suit le contenu.
     std::size_t append(std::span<const float> input) noexcept {
         const std::size_t room = samples_.size() - length_;
         const std::size_t count = std::min(input.size(), room);
@@ -40,20 +44,31 @@ public:
             samples_[length_ + i] = input[i];
         }
         length_ += count;
+        loopLength_ = length_;
         return count;
+    }
+
+    /// Force la période de boucle (pour la synchronisation : alignement sur un
+    /// multiple musical). Bornée à [1, capacité] ; au-delà du contenu, la boucle
+    /// est complétée par du silence (le buffer est déjà à zéro).
+    void setLoopLength(std::size_t length) noexcept {
+        if (samples_.empty()) {
+            return;
+        }
+        loopLength_ = std::clamp<std::size_t>(length, 1, samples_.size());
     }
 
     /// Lit `output.size()` échantillons en bouclant à partir de `position`.
     /// Renvoie la nouvelle position de lecture. Sortie silencieuse si vide.
     std::size_t readLooped(std::span<float> output, std::size_t position) const noexcept {
-        if (length_ == 0) {
+        if (loopLength_ == 0) {
             std::fill(output.begin(), output.end(), 0.0F);
             return 0;
         }
-        std::size_t pos = position % length_;
+        std::size_t pos = position % loopLength_;
         for (float& sample : output) {
             sample = samples_[pos];
-            pos = (pos + 1) % length_;
+            pos = (pos + 1) % loopLength_;
         }
         return pos;
     }
@@ -61,13 +76,13 @@ public:
     /// Superpose (somme) un signal sur le contenu existant à partir de
     /// `position`, en bouclant. Renvoie la nouvelle position. No-op si vide.
     std::size_t overdub(std::span<const float> input, std::size_t position) noexcept {
-        if (length_ == 0) {
+        if (loopLength_ == 0) {
             return 0;
         }
-        std::size_t pos = position % length_;
+        std::size_t pos = position % loopLength_;
         for (const float value : input) {
             samples_[pos] += value;
-            pos = (pos + 1) % length_;
+            pos = (pos + 1) % loopLength_;
         }
         return pos;
     }
@@ -77,7 +92,8 @@ public:
 
 private:
     std::vector<float> samples_;
-    std::size_t length_ = 0;
+    std::size_t length_ = 0;      // échantillons enregistrés
+    std::size_t loopLength_ = 0;  // période de boucle effective (≤ capacité)
 };
 
 }  // namespace voicelive::engine

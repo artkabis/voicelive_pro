@@ -34,6 +34,8 @@
             file="engine/src/LooperEngine.cpp"/>
       <FILE id="engChan" name="ChannelUtils.cpp" compile="1" resource="0"
             file="engine/src/ChannelUtils.cpp"/>
+      <FILE id="engMetro" name="Metronome.cpp" compile="1" resource="0"
+            file="engine/src/Metronome.cpp"/>
     </GROUP>
   </MAINGROUP>
   <JUCEOPTIONS JUCE_WEB_BROWSER="0" JUCE_USE_CURL="0" JUCE_STRICT_REFCOUNTEDPOINTER="1"/>

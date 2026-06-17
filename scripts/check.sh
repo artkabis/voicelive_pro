@@ -10,6 +10,9 @@ CLANG_FORMAT="${CLANG_FORMAT:-clang-format}"
 CLANG_TIDY="${CLANG_TIDY:-clang-tidy}"
 BUILD_DIR="build"
 
+echo "▶ 0/5  Cohérence des sources du projet Android (.jucer)"
+./scripts/check_jucer.sh
+
 echo "▶ 1/5  Formatage (clang-format)"
 mapfile -t SOURCES < <(find core dsp engine testing \( -name '*.cpp' -o -name '*.hpp' \))
 "$CLANG_FORMAT" --dry-run --Werror "${SOURCES[@]}"

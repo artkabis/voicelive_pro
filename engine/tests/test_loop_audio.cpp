@@ -64,6 +64,35 @@ TEST(LoopAudio, overdub_ajoute_au_contenu) {
     CHECK(loop.sampleAt(2) == 1.5F);
 }
 
+TEST(LoopAudio, set_loop_length_raccourcit_la_periode) {
+    LoopAudio loop;
+    loop.prepare(16);
+    const std::array<float, 6> content{1.0F, 2.0F, 3.0F, 4.0F, 5.0F, 6.0F};
+    loop.append(content);
+    CHECK(loop.loopLength() == 6U);
+
+    loop.setLoopLength(3);  // ne boucle plus que sur les 3 premiers
+    std::vector<float> out(6, 0.0F);
+    loop.readLooped(out, 0);  // 1,2,3,1,2,3
+    CHECK(out[0] == 1.0F);
+    CHECK(out[3] == 1.0F);
+    CHECK(out[5] == 3.0F);
+}
+
+TEST(LoopAudio, set_loop_length_complete_au_silence) {
+    LoopAudio loop;
+    loop.prepare(16);
+    const std::array<float, 2> content{1.0F, 1.0F};
+    loop.append(content);
+
+    loop.setLoopLength(4);  // boucle de 4 : 1,1,0,0
+    std::vector<float> out(4, 9.0F);
+    loop.readLooped(out, 0);
+    CHECK(out[0] == 1.0F);
+    CHECK(out[2] == 0.0F);
+    CHECK(out[3] == 0.0F);
+}
+
 TEST(LoopAudio, clear_remet_a_zero_la_longueur) {
     LoopAudio loop;
     loop.prepare(8);

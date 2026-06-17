@@ -30,6 +30,7 @@ core::Status LooperEngine::prepare(core::SampleRate sampleRate, std::size_t trac
     metronome_.prepare(sampleRate, maxBlockSize);
     scratch_.assign(maxBlockSize, 0.0F);
     selected_ = 0;
+    masterLength_ = 0;
     return core::Status::success();
 }
 
@@ -49,8 +50,13 @@ core::Status LooperEngine::applyCommand(const EngineCommand& command) {
     switch (command.action) {
         case Cmd::Record:
             return processor.startRecording();
-        case Cmd::FinishRecording:
-            return processor.finishRecording();
+        case Cmd::FinishRecording: {
+            const core::Status status = processor.finishRecording();
+            if (status.ok()) {
+                alignTrackLoop(processor);
+            }
+            return status;
+        }
         case Cmd::Play:
             return processor.play();
         case Cmd::Stop:
@@ -72,6 +78,19 @@ core::Status LooperEngine::applyCommand(const EngineCommand& command) {
             break;  // déjà traité plus haut
     }
     return core::Status::success();
+}
+
+void LooperEngine::alignTrackLoop(TrackProcessor& processor) {
+    const std::size_t recorded = processor.audio().length();
+    if (recorded == 0) {
+        return;
+    }
+    if (masterLength_ == 0) {
+        masterLength_ = recorded;  // première boucle enregistrée = référence
+        return;
+    }
+    const std::size_t aligned = core::Transport::chooseLoopMultiple(recorded, masterLength_);
+    processor.setLoopLength(aligned);
 }
 
 void LooperEngine::process(std::span<float> output, std::span<const float> input) noexcept {

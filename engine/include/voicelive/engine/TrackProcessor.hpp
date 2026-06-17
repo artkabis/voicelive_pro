@@ -48,6 +48,9 @@ public:
     void setGain(core::Gain gain) noexcept { track_.setGain(gain); }
     void setMuted(bool muted) noexcept { track_.setMuted(muted); }
 
+    /// Force la période de boucle (synchronisation sur la piste maître).
+    void setLoopLength(std::size_t length) noexcept { audio_.setLoopLength(length); }
+
     // --- Transitions (état + audio maintenus cohérents) -------------------
     core::Status startRecording() {
         const core::Status status = track_.record();

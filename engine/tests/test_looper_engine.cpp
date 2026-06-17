@@ -138,6 +138,27 @@ TEST(LooperEngine, apply_reglages_depuis_project) {
     CHECK(engine.track(0)->track().isMuted());
 }
 
+TEST(LooperEngine, synchronisation_aligne_sur_la_piste_maitre) {
+    LooperEngine engine;
+    initEngine(engine, 2);
+    std::vector<float> scratch(8, 0.0F);
+
+    // Piste 0 = maître : 4 échantillons enregistrés.
+    REQUIRE(engine.recordTrack(0).ok());
+    engine.process(scratch, std::array<float, 4>{1.0F, 1.0F, 1.0F, 1.0F});
+    REQUIRE(engine.finishRecordingTrack(0).ok());
+    CHECK(engine.masterLoopLength() == 4U);
+    CHECK(engine.track(0)->audio().loopLength() == 4U);
+
+    // Piste 1 : 7 échantillons enregistrés → alignés sur 2× le maître = 8.
+    REQUIRE(engine.recordTrack(1).ok());
+    engine.process(scratch, std::array<float, 7>{1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F, 1.0F});
+    REQUIRE(engine.finishRecordingTrack(1).ok());
+    CHECK(engine.track(1)->audio().length() == 7U);      // réellement enregistré
+    CHECK(engine.track(1)->audio().loopLength() == 8U);  // boucle alignée (2×)
+    CHECK(engine.masterLoopLength() == 4U);              // maître inchangé
+}
+
 TEST(LooperEngine, metronome_se_mixe_dans_la_sortie) {
     LooperEngine engine;
     initEngine(engine, 1);

@@ -64,6 +64,31 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étape 8 : synchronisation des boucles + garde-fou .jucer
+
+### Livré (priorité fonctionnelle n°2)
+- **`LoopAudio`** : période de boucle (`loopLength`) dissociée du contenu
+  enregistré ; `setLoopLength()` permet d'aligner/compléter au silence.
+- **`LooperEngine`** : la 1ʳᵉ boucle enregistrée devient la **référence
+  (maître)** ; les pistes suivantes sont **alignées sur un multiple musical**
+  (¼/½/1×/2×/4× via `Transport::chooseLoopMultiple`) au `FinishRecording`.
+  Accès `masterLoopLength()`.
+- +3 tests (total : 85).
+
+### Garde-fou anti-friction (CI Android)
+- Le build Android (Projucer) énumère les sources à la main → un fichier oublié
+  = `undefined symbol` au link (cas vécu avec `Metronome.cpp`).
+- Ajout de `scripts/check_jucer.sh` (échoue si une source `*/src/*.cpp` n'est
+  pas déclarée dans le `.jucer`), branché dans `check.sh` **et** en job CI rapide
+  (`jucer-sources`). Plus aucune dérive silencieuse possible.
+
+### CI Android (progression)
+- `gui_extra` déclaré → Projucer exporte, Gradle + NDK **cross-compilent pour
+  arm64-v8a** ✅. Restait le link → corrigé par l'ajout de `Metronome.cpp` au
+  `.jucer`.
+
+---
+
 ## 2026-06-16 — Étape 7 : métronome (priorité fonctionnelle n°1)
 
 ### Livré
