@@ -53,6 +53,20 @@ private:
     void timerCallback() override;
     void updateDiagnostics();
 
+    /// Journal thread-safe : capture tous les messages JUCE (et les nôtres) pour
+    /// les afficher dans l'app et les copier (récupérables sans console).
+    class AppLogger final : public juce::Logger {
+    public:
+        void logMessage(const juce::String& message) override;
+        [[nodiscard]] juce::String snapshot() const;
+
+    private:
+        juce::CriticalSection lock_;
+        juce::StringArray lines_;
+    };
+
+    AppLogger appLogger_;
+
     voicelive::engine::LooperEngine engine_;
     voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possédé par la chaîne de mastering
 
@@ -73,7 +87,8 @@ private:
     juce::Slider midEqSlider_;
     juce::Slider highEqSlider_;
 
-    juce::TextEditor diagView_;  // panneau de diagnostic (observabilité mobile)
+    juce::TextEditor diagView_;    // panneau de diagnostic (observabilité mobile)
+    juce::TextButton copyButton_;  // copie le diagnostic dans le presse-papier
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

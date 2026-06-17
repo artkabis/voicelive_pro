@@ -58,6 +58,7 @@
   <EXPORTFORMATS>
     <ANDROIDSTUDIO targetFolder="Builds/Android" androidMinimumSDK="24"
                    androidTargetSDK="34" androidCppStandard="c++20"
+                   androidMicNeeded="1"
                    headerPath="../../core/include&#10;../../dsp/include&#10;../../engine/include">
       <CONFIGURATIONS>
         <CONFIGURATION name="Debug" isDebug="1" optimisation="1"

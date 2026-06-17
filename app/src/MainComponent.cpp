@@ -19,7 +19,61 @@ using voicelive::core::SampleRate;
 using voicelive::core::TrackState;
 using voicelive::engine::EngineCommand;
 
+namespace {
+const char* actionName(EngineCommand::Action action) {
+    switch (action) {
+        case EngineCommand::Action::Record:
+            return "Record";
+        case EngineCommand::Action::FinishRecording:
+            return "Finish";
+        case EngineCommand::Action::Play:
+            return "Play";
+        case EngineCommand::Action::Stop:
+            return "Stop";
+        case EngineCommand::Action::StartOverdub:
+            return "Overdub";
+        case EngineCommand::Action::StopOverdub:
+            return "StopOverdub";
+        case EngineCommand::Action::Clear:
+            return "Clear";
+        case EngineCommand::Action::SetGain:
+            return "SetGain";
+        case EngineCommand::Action::SetMuted:
+            return "SetMuted";
+        case EngineCommand::Action::SelectTrack:
+            return "Select";
+    }
+    return "?";
+}
+}  // namespace
+
+void MainComponent::AppLogger::logMessage(const juce::String& message) {
+    {
+        const juce::ScopedLock scoped(lock_);
+        lines_.add(message);
+        while (lines_.size() > 200) {
+            lines_.remove(0);
+        }
+    }
+    juce::Logger::outputDebugString(message);  // → logcat sur Android
+}
+
+juce::String MainComponent::AppLogger::snapshot() const {
+    const juce::ScopedLock scoped(lock_);
+    return lines_.joinIntoString("\n");
+}
+
 MainComponent::MainComponent() {
+    // Capture tous les logs (les nôtres + JUCE) pour les rendre copiables.
+    juce::Logger::setCurrentLogger(&appLogger_);
+    juce::Logger::writeToLog("VoiceLive Pro démarré");
+
+    // Demande explicite de la permission micro (indispensable à l'entrée audio).
+    juce::RuntimePermissions::request(juce::RuntimePermissions::recordAudio, [](bool granted) {
+        juce::Logger::writeToLog(granted ? "Permission micro : ACCORDÉE"
+                                         : "Permission micro : REFUSÉE");
+    });
+
     titleLabel_.setText("VoiceLive Pro", juce::dontSendNotification);
     titleLabel_.setJustificationType(juce::Justification::centred);
     titleLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(22.0F)));
@@ -92,8 +146,15 @@ MainComponent::MainComponent() {
     diagView_.setFont(juce::Font(juce::FontOptions{}.withHeight(13.0F)));
     addAndMakeVisible(diagView_);
 
+    copyButton_.setButtonText("Copier le diagnostic");
+    copyButton_.onClick = [this] {
+        juce::SystemClipboard::copyTextToClipboard(diagView_.getText());
+        juce::Logger::writeToLog("Diagnostic copié dans le presse-papier");
+    };
+    addAndMakeVisible(copyButton_);
+
     analysis_.assign(kAnalysisSize, 0.0F);
-    setSize(760, 680);
+    setSize(760, 720);
     setAudioChannels(2, 2);
     startTimerHz(10);
 }
@@ -101,6 +162,7 @@ MainComponent::MainComponent() {
 MainComponent::~MainComponent() {
     stopTimer();
     shutdownAudio();
+    juce::Logger::setCurrentLogger(nullptr);
 }
 
 void MainComponent::setupTrackStrip(std::size_t index) {
@@ -252,12 +314,14 @@ void MainComponent::updateDiagnostics() {
              << "\n";
     }
 
+    text << "\n--- Journal (récent) ---\n" << appLogger_.snapshot();
     diagView_.setText(text, false);
 }
 
 void MainComponent::resized() {
     auto area = getLocalBounds().reduced(12);
     diagView_.setBounds(area.removeFromBottom(130));  // panneau Diag en bas
+    copyButton_.setBounds(area.removeFromBottom(34).reduced(2));
     area.removeFromBottom(8);
     titleLabel_.setBounds(area.removeFromTop(32));
     tunerLabel_.setBounds(area.removeFromTop(28));
@@ -306,5 +370,10 @@ void MainComponent::postCommand(EngineCommand::Action action, std::size_t track,
     command.track = track;
     command.gain = gain;
     command.muted = muted;
-    static_cast<void>(engine_.post(command));
+    const bool accepted = engine_.post(command);
+
+    // Trace chaque clic : prouve que l'UI répond, même si l'audio est mort.
+    juce::Logger::writeToLog(juce::String("Clic piste ") +
+                             juce::String(static_cast<int>(track) + 1) + " : " +
+                             actionName(action) + (accepted ? "" : "  (FILE PLEINE)"));
 }

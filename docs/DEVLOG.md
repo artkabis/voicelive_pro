@@ -84,6 +84,34 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 18 : permission micro + diagnostic copiable
+
+### Problème rapporté
+App « non fonctionnelle » sur mobile : impossible d'enregistrer, boutons sans
+effet ; pas de moyen de récupérer les erreurs.
+
+### Cause probable
+La **permission micro n'était pas déclarée** (`androidMicNeeded` absent du
+`.jucer`) → aucun accès à l'entrée audio → le moteur ne démarre pas → les
+boutons (qui dépendent du moteur préparé) ne déclenchent rien.
+
+### Livré
+- **`.jucer` : `androidMicNeeded="1"`** → permission `RECORD_AUDIO` dans le
+  manifeste, et **demande explicite au lancement** (`RuntimePermissions`), tracée.
+- **Journal d'erreurs copiable** : `AppLogger` capture tous les messages JUCE
+  (+ les nôtres) ; le panneau Diag les affiche, et un bouton **« Copier le
+  diagnostic »** met tout dans le presse-papier (à coller pour debug).
+- **Trace de chaque clic** (`Clic piste N : Record …`, + « FILE PLEINE » si la
+  file sature) → distingue « UI morte » de « audio mort ».
+- Trace de l'init audio et du résultat de la permission.
+
+### Méthode de test mobile
+1. Installer le nouvel APK, **accorder la permission micro** au lancement.
+2. Tester (Rec/Play/Stop, métronome, EQ…).
+3. En cas de souci : **« Copier le diagnostic »** → coller le texte ici.
+
+---
+
 ## 2026-06-17 — Étape 17 : observabilité mobile (diagnostic)
 
 ### Problème
