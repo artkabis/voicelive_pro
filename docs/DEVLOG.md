@@ -84,6 +84,25 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 15 : câblage mastering + accordeur dans le moteur
+
+### Livré
+- **Bus de mastering** : `LooperEngine::masterEffects()` expose une `EffectChain`
+  appliquée au **mix complet** (après pistes + métronome, avant le limiteur) —
+  on y insère compresseur/égaliseur.
+- **Accordeur intégré** : `LooperEngine::tune(input)` → `std::optional<Note>`
+  (détecte la fondamentale de l'entrée et la mappe sur une note).
+- +2 tests (total : 131) : l'égaliseur de mastering amplifie le mix ;
+  l'accordeur détecte le La joué en entrée.
+
+### Décision technique
+- Avant l'UI (non testable hors CI), on rend le **moteur complet et testé** :
+  tous les modules (effets par piste, mastering, métronome, accordeur, import/
+  export) sont désormais accessibles via des API de haut niveau unit-testées.
+  L'UI ne sera plus qu'une fine couche de présentation.
+
+---
+
 ## 2026-06-17 — Étape 14 : mastering (compresseur + égaliseur)
 
 ### Livré (priorité fonctionnelle n°7)

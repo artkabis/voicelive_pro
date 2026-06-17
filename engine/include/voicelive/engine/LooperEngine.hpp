@@ -14,15 +14,19 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "voicelive/core/AudioParams.hpp"
+#include "voicelive/core/Music.hpp"
 #include "voicelive/core/Project.hpp"
 #include "voicelive/core/Result.hpp"
 #include "voicelive/core/Transport.hpp"
+#include "voicelive/dsp/EffectChain.hpp"
+#include "voicelive/dsp/PitchDetector.hpp"
 #include "voicelive/engine/Metronome.hpp"
 #include "voicelive/engine/RingBuffer.hpp"
 #include "voicelive/engine/TrackProcessor.hpp"
@@ -88,6 +92,14 @@ public:
     /// Charge un fichier WAV dans une piste.
     core::Status importTrackFromFile(std::size_t index, const std::string& path);
 
+    // --- Mastering (effets sur le mix final) -----------------------------
+    /// Chaîne d'effets appliquée au mix complet (compresseur, égaliseur…).
+    [[nodiscard]] dsp::EffectChain& masterEffects() noexcept { return masterChain_; }
+
+    // --- Accordeur -------------------------------------------------------
+    /// Estime la note jouée dans un bloc d'entrée (pour l'accordeur).
+    [[nodiscard]] std::optional<core::music::Note> tune(std::span<const float> input) const;
+
     // --- Export audio (rendu du mix) -------------------------------------
     /// Rend `frames` échantillons du mix (mono) depuis le début des boucles,
     /// métronome exclu. N'altère pas l'état de lecture courant. Hors temps réel.
@@ -143,6 +155,8 @@ private:
     std::vector<TrackProcessor> tracks_;
     core::Transport transport_;
     Metronome metronome_;
+    dsp::EffectChain masterChain_;
+    dsp::PitchDetector tuner_;
     std::string name_;
     std::size_t selected_ = 0;
     std::size_t masterLength_ = 0;  // longueur de la boucle maître (0 = aucune)

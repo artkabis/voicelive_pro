@@ -3,15 +3,19 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <string>
 #include <vector>
 
 #include "voicelive/core/AudioParams.hpp"
 #include "voicelive/core/LooperTrack.hpp"
+#include "voicelive/core/Music.hpp"
 #include "voicelive/core/Project.hpp"
 #include "voicelive/core/Result.hpp"
 #include "voicelive/core/Transport.hpp"
+#include "voicelive/dsp/EffectChain.hpp"
+#include "voicelive/dsp/PitchDetector.hpp"
 #include "voicelive/engine/Mixer.hpp"
 #include "voicelive/engine/TrackProcessor.hpp"
 #include "voicelive/engine/WavFile.hpp"
@@ -31,6 +35,7 @@ core::Status LooperEngine::prepare(core::SampleRate sampleRate, std::size_t trac
         processor.prepare(sampleRate, loopCapacity, maxBlockSize);
     }
     metronome_.prepare(sampleRate, maxBlockSize);
+    masterChain_.prepare(sampleRate, maxBlockSize);
     scratch_.assign(maxBlockSize, 0.0F);
     selected_ = 0;
     masterLength_ = 0;
@@ -183,7 +188,16 @@ void LooperEngine::process(std::span<float> output, std::span<const float> input
         mixer::addScaled(mixTarget, scratch, 1.0F);
     }
     metronome_.process(mixTarget, transport_);
+    masterChain_.process(mixTarget);  // mastering sur le mix complet
     mixer::limit(output);
+}
+
+std::optional<core::music::Note> LooperEngine::tune(std::span<const float> input) const {
+    const auto frequency = tuner_.detect(input, transport_.sampleRate());
+    if (!frequency) {
+        return std::nullopt;
+    }
+    return core::music::fromFrequency(*frequency);
 }
 
 core::Result<core::Project> LooperEngine::exportSettings() const {

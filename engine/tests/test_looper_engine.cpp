@@ -6,12 +6,14 @@
 #include <array>
 #include <cmath>
 #include <memory>
+#include <numbers>
 #include <vector>
 
 #include "voicelive/core/AudioParams.hpp"
 #include "voicelive/core/Project.hpp"
 #include "voicelive/core/Transport.hpp"
 #include "voicelive/dsp/Delay.hpp"
+#include "voicelive/dsp/Equalizer.hpp"
 #include "voicelive/engine/LooperEngine.hpp"
 #include "voicelive/engine/WavFile.hpp"
 #include "voicelive_testing/testing.hpp"
@@ -280,6 +282,41 @@ TEST(LooperEngine, render_mix_est_deterministe_et_preserve_l_etat) {
     REQUIRE(second.samples.size() == 4U);
     CHECK_NEAR(first.samples[1], second.samples[1], 1e-6);
     CHECK_NEAR(first.samples[3], second.samples[3], 1e-6);
+}
+
+TEST(LooperEngine, mastering_applique_au_mix) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+
+    voicelive::engine::wav::AudioData sample;
+    sample.channels = 1;
+    sample.samples = std::vector<float>(256, 0.3F);  // continu
+    REQUIRE(engine.importTrack(0, sample).ok());
+
+    auto eq = std::make_unique<voicelive::dsp::Equalizer>();
+    eq->setLowGain(6.0F);  // +6 dB dans le grave → boost du continu
+    engine.masterEffects().add(std::move(eq));
+
+    const std::array<float, 64> silence{};
+    std::vector<float> out(64, 0.0F);
+    for (int i = 0; i < 20; ++i) {
+        engine.process(out, silence);  // laisse l'égaliseur s'établir
+    }
+    CHECK(out.back() > 0.45F);  // mix (0.3) amplifié par le mastering
+}
+
+TEST(LooperEngine, accordeur_detecte_la_note_jouee) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+
+    std::vector<float> input(4096, 0.0F);
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        input[i] = static_cast<float>(
+            std::sin(2.0 * std::numbers::pi * 440.0 * static_cast<double>(i) / 48000.0));
+    }
+    const auto note = engine.tune(input);
+    REQUIRE(note.has_value());
+    CHECK(note->midi == 69);  // La4
 }
 
 TEST(LooperEngine, chaine_d_effets_par_piste) {
