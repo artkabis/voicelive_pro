@@ -18,6 +18,8 @@
             file="core/src/LooperTrack.cpp"/>
       <FILE id="coreTrans" name="Transport.cpp" compile="1" resource="0"
             file="core/src/Transport.cpp"/>
+      <FILE id="coreSer" name="ProjectSerializer.cpp" compile="1" resource="0"
+            file="core/src/ProjectSerializer.cpp"/>
     </GROUP>
     <GROUP id="grpDsp" name="dsp">
       <FILE id="dspReverb" name="Reverb.cpp" compile="1" resource="0"

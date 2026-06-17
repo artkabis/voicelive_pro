@@ -64,6 +64,25 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étape 9 : sauvegarde / chargement de projet
+
+### Livré (priorité fonctionnelle n°3)
+- **`core::project_io`** : sérialisation des **réglages** d'un projet (nom,
+  transport, gains/mute, sélection) en **format texte versionné**
+  (`VOICELIVE_PROJECT v1`), sans dépendance externe (cœur portable natif+WASM).
+  - `serialize` / `deserialize` (chaîne) + `saveToFile` / `loadFromFile`.
+  - Parsing robuste (`std::from_chars`, sans exceptions), validation stricte :
+    en-tête, champs requis, cohérence du nombre de pistes → `Result`/`Status`.
+  - Les données audio (boucles) ne sont pas incluses (rôle de l'export audio).
+- +6 tests (total : 91) : round-trip chaîne **et** fichier, en-tête invalide,
+  champ manquant, nombre de pistes incohérent, fichier absent.
+- `ProjectSerializer.cpp` déclaré dans le `.jucer` (garde-fou vert).
+
+### Prochaine priorité
+4. Import / export audio (WAV).
+
+---
+
 ## 2026-06-16 — Étape 8 : synchronisation des boucles + garde-fou .jucer
 
 ### Livré (priorité fonctionnelle n°2)

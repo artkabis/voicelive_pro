@@ -79,7 +79,10 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 - **`LooperEngine`** : assemble N pistes + transport + mixage.
 - **File de commandes lock-free** (`RingBuffer` SPSC) UI → thread audio.
 - **Pont de réglages** avec `core::Project` (export/import : nom, transport,
-  gains/mute, sélection — base de la sauvegarde de projet).
+  gains/mute, sélection).
+- **Sauvegarde / chargement de projet** (`core::project_io`) : sérialisation des
+  réglages en fichier texte versionné (`serialize`/`deserialize`/`saveToFile`/
+  `loadFromFile`).
 - **Conversion de canaux** stéréo ↔ mono testée (`ChannelUtils`).
 
 ### 🖥️ Application (`app`, JUCE)
