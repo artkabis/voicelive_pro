@@ -2,6 +2,7 @@
 #include "voicelive/engine/LooperEngine.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cstddef>
 #include <optional>
 #include <span>
@@ -171,6 +172,8 @@ void LooperEngine::alignTrackLoop(TrackProcessor& processor) {
 }
 
 void LooperEngine::process(std::span<float> output, std::span<const float> input) noexcept {
+    blocksProcessed_.fetch_add(1, std::memory_order_relaxed);
+
     // 1) Vider la file de commandes (côté thread audio). Une commande invalide
     //    est un no-op sûr : la machine à états refuse sans muter l'état.
     EngineCommand command;

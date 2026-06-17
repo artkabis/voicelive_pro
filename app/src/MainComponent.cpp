@@ -84,8 +84,16 @@ MainComponent::MainComponent() {
         }
     };
 
+    // Panneau de diagnostic : rend l'app observable sur mobile (pas de console).
+    diagView_.setMultiLine(true);
+    diagView_.setReadOnly(true);
+    diagView_.setCaretVisible(false);
+    diagView_.setScrollbarsShown(true);
+    diagView_.setFont(juce::Font(juce::FontOptions{}.withHeight(13.0F)));
+    addAndMakeVisible(diagView_);
+
     analysis_.assign(kAnalysisSize, 0.0F);
-    setSize(760, 540);
+    setSize(760, 680);
     setAudioChannels(2, 2);
     startTimerHz(10);
 }
@@ -148,6 +156,11 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
 
     if (const auto sr = SampleRate::create(rate); sr.ok()) {
         static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, blockSize));
+        // Trace visible via `adb logcat` sur Android (sinon invisible sur mobile).
+        juce::Logger::writeToLog("VoiceLive: audio prêt " + juce::String(rate) + " Hz, bloc " +
+                                 juce::String(static_cast<int>(blockSize)));
+    } else {
+        juce::Logger::writeToLog("VoiceLive: ERREUR fréquence " + juce::String(rate));
     }
     monoIn_.assign(blockSize, 0.0F);
     monoOut_.assign(blockSize, 0.0F);
@@ -203,10 +216,49 @@ void MainComponent::timerCallback() {
                               juce::String(music::octave(note->midi)) + "   " +
                               (cents >= 0 ? "+" : "") + juce::String(cents) + " cents";
     tunerLabel_.setText(text, juce::dontSendNotification);
+
+    updateDiagnostics();
+}
+
+void MainComponent::updateDiagnostics() {
+    juce::String text;
+    text << "VoiceLive Pro v2.0.0  |  JUCE " << juce::SystemStats::getJUCEVersion() << "\n";
+    text << "Build : " << __DATE__ << " " << __TIME__ << "\n";
+
+    if (auto* device = deviceManager.getCurrentAudioDevice(); device != nullptr) {
+        text << "Audio : " << device->getName() << "  "
+             << juce::String(device->getCurrentSampleRate(), 0) << " Hz / buffer "
+             << device->getCurrentBufferSizeSamples() << "\n";
+    } else {
+        text << "Audio : NON DÉMARRÉ (vérifier les permissions micro)\n";
+    }
+
+    const auto diag = engine_.diagnostics();
+    text << "Moteur : " << static_cast<int>(diag.trackCount) << " pistes, "
+         << static_cast<int>(diag.blocksProcessed) << " blocs, "
+         << static_cast<int>(diag.droppedCommands) << " cmd perdues, métronome "
+         << (diag.metronomeEnabled ? "ON" : "OFF") << ", master FX "
+         << static_cast<int>(diag.masterEffectCount) << "\n";
+
+    for (std::size_t i = 0; i < diag.trackCount; ++i) {
+        const auto* processor = engine_.track(i);
+        if (processor == nullptr) {
+            continue;
+        }
+        const auto& track = processor->track();
+        text << "  Piste " << static_cast<int>(i) + 1 << " : "
+             << voicelive::core::toString(track.state()) << "  gain "
+             << juce::String(track.gain().linear(), 2) << (track.isMuted() ? "  [MUTE]" : "")
+             << "\n";
+    }
+
+    diagView_.setText(text, false);
 }
 
 void MainComponent::resized() {
     auto area = getLocalBounds().reduced(12);
+    diagView_.setBounds(area.removeFromBottom(130));  // panneau Diag en bas
+    area.removeFromBottom(8);
     titleLabel_.setBounds(area.removeFromTop(32));
     tunerLabel_.setBounds(area.removeFromTop(28));
     area.removeFromTop(8);

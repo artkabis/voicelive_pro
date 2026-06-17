@@ -51,6 +51,7 @@ private:
     void postCommand(voicelive::engine::EngineCommand::Action action, std::size_t track, float gain,
                      bool muted);
     void timerCallback() override;
+    void updateDiagnostics();
 
     voicelive::engine::LooperEngine engine_;
     voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possédé par la chaîne de mastering
@@ -71,6 +72,8 @@ private:
     juce::Slider lowEqSlider_;
     juce::Slider midEqSlider_;
     juce::Slider highEqSlider_;
+
+    juce::TextEditor diagView_;  // panneau de diagnostic (observabilité mobile)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

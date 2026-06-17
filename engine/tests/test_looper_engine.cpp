@@ -319,6 +319,32 @@ TEST(LooperEngine, accordeur_detecte_la_note_jouee) {
     CHECK(note->midi == 69);  // La4
 }
 
+TEST(LooperEngine, diagnostics_compte_les_blocs_traites) {
+    LooperEngine engine;
+    initEngine(engine, 2);
+    const std::array<float, 4> silence{};
+    std::vector<float> out(4, 0.0F);
+    engine.process(out, silence);
+    engine.process(out, silence);
+    engine.process(out, silence);
+
+    const auto diag = engine.diagnostics();
+    CHECK(diag.blocksProcessed == 3U);
+    CHECK(diag.trackCount == 2U);
+    CHECK(diag.sampleRate == 48000U);
+    CHECK(diag.droppedCommands == 0U);
+}
+
+TEST(LooperEngine, diagnostics_compte_les_commandes_perdues) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+    // File de capacité 64 : sans traitement, le surplus est perdu et compté.
+    for (int i = 0; i < 200; ++i) {
+        static_cast<void>(engine.post({EngineCommand::Action::Stop, 0}));
+    }
+    CHECK(engine.diagnostics().droppedCommands > 0U);
+}
+
 TEST(LooperEngine, chaine_d_effets_par_piste) {
     LooperEngine engine;
     initEngine(engine, 1);

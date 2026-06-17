@@ -84,6 +84,26 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 17 : observabilité mobile (diagnostic)
+
+### Problème
+Sur mobile, l'app est une boîte noire (pas de console) → impossible de
+comprendre ce qui ne va pas.
+
+### Livré
+- **`LooperEngine::diagnostics()`** : instantané d'état (fréquence, pistes,
+  blocs traités, **commandes perdues** si la file sature, métronome, nb d'effets
+  de mastering). Compteurs `std::atomic` alimentés par `process()`/`post()`.
+  +2 tests (total : 133).
+- **Panneau Diag dans l'app** : affiche en bas de l'écran, rafraîchi 10×/s,
+  l'état audio (démarré ? fréquence/buffer), les compteurs moteur et l'état de
+  chaque piste + version/build. Rend l'app **observable sans console**.
+- **Trace d'init audio** via `juce::Logger` → visible dans `adb logcat`.
+- **`docs/DEBUG_MOBILE.md`** : méthodologie en 3 niveaux (panneau Diag, compteurs
+  moteur, `adb logcat` + symbolication `ndk-stack`) + checklist symptôme→cause.
+
+---
+
 ## 2026-06-17 — Étape 16 : UI multipiste JUCE (priorité n°8)
 
 ### Livré (`app/MainComponent`)

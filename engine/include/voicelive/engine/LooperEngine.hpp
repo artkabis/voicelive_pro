@@ -12,6 +12,7 @@
 // piste sélectionnée). `exportSettings()` / `applySettings()` font le pont.
 #pragma once
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -53,6 +54,16 @@ struct EngineCommand {
     std::size_t track = 0;
     float gain = 1.0F;   ///< Pour SetGain (linéaire).
     bool muted = false;  ///< Pour SetMuted.
+};
+
+/// Instantané d'état du moteur, pour le diagnostic (panneau Diag de l'app).
+struct Diagnostics {
+    unsigned sampleRate = 0;
+    std::size_t trackCount = 0;
+    std::uint64_t blocksProcessed = 0;
+    std::uint32_t droppedCommands = 0;  // file pleine : commandes UI perdues
+    bool metronomeEnabled = false;
+    std::size_t masterEffectCount = 0;
 };
 
 class LooperEngine {
@@ -133,8 +144,27 @@ public:
     void setMetronomeEnabled(bool enabled) noexcept { metronome_.setEnabled(enabled); }
     void setMetronomeGain(core::Gain gain) noexcept { metronome_.setGain(gain); }
 
-    /// Dépose une commande pour le thread audio (lock-free). false si plein.
-    bool post(const EngineCommand& command) noexcept { return commands_.push(command); }
+    /// Dépose une commande pour le thread audio (lock-free). false si plein
+    /// (la commande est alors comptabilisée comme perdue, cf. diagnostics()).
+    bool post(const EngineCommand& command) noexcept {
+        if (commands_.push(command)) {
+            return true;
+        }
+        droppedCommands_.fetch_add(1, std::memory_order_relaxed);
+        return false;
+    }
+
+    /// Instantané d'état pour le diagnostic (lecture sûre depuis le thread UI).
+    [[nodiscard]] Diagnostics diagnostics() const noexcept {
+        Diagnostics diag;
+        diag.sampleRate = transport_.sampleRate().hz();
+        diag.trackCount = tracks_.size();
+        diag.blocksProcessed = blocksProcessed_.load(std::memory_order_relaxed);
+        diag.droppedCommands = droppedCommands_.load(std::memory_order_relaxed);
+        diag.metronomeEnabled = metronome_.isEnabled();
+        diag.masterEffectCount = masterChain_.size();
+        return diag;
+    }
 
     /// Vide la file de commandes puis rend le mix complet. Temps réel.
     void process(std::span<float> output, std::span<const float> input) noexcept;
@@ -162,6 +192,8 @@ private:
     std::size_t masterLength_ = 0;  // longueur de la boucle maître (0 = aucune)
     std::vector<float> scratch_;    // buffer de rendu par piste (taille maxBlock)
     RingBuffer<EngineCommand> commands_{64};
+    std::atomic<std::uint64_t> blocksProcessed_{0};
+    std::atomic<std::uint32_t> droppedCommands_{0};
 };
 
 }  // namespace voicelive::engine
