@@ -6,6 +6,8 @@ Contrairement à une intuition courante, un logiciel audio **a** une surface
 d'attaque réelle :
 
 1. **Fichiers audio importés** (WAV/FLAC/AIFF…) : en-têtes malformés →
+   *(le parseur WAV `engine::wav` est borné, valide en-tête/chunks/tailles et
+   renvoie une erreur plutôt que de déréférencer hors limites.)*
    débordements mémoire. C'est le vecteur n°1.
 2. **Fichiers de projet** : désérialisation de données non fiables.
 3. **Presets partagés** entre utilisateurs.

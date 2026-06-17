@@ -84,6 +84,8 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
   réglages en fichier texte versionné (`serialize`/`deserialize`/`saveToFile`/
   `loadFromFile`).
 - **Conversion de canaux** stéréo ↔ mono testée (`ChannelUtils`).
+- **Import / export WAV** (`engine::wav`) : lecture (PCM 16 bits / float 32 bits)
+  et écriture (PCM 16 bits), parseur borné et validé.
 
 ### 🖥️ Application (`app`, JUCE)
 - App desktop : ouverture audio (2 in / 2 out), pont moteur, **UI de transport**

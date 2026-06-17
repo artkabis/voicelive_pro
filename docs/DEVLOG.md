@@ -64,6 +64,25 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-16 — Étape 10 : import / export audio WAV
+
+### Livré (priorité fonctionnelle n°4)
+- **`engine::wav`** : lecture/écriture de fichiers WAV (RIFF/WAVE) en C++ pur.
+  - `write` : PCM 16 bits. `read` : PCM 16 bits **et** IEEE float 32 bits,
+    mono/multicanal.
+  - **Parseur borné et validé** (les fichiers importés = surface d'attaque,
+    cf. SECURITY.md) : en-tête, chunks, tailles → `Result`/`Status`, jamais d'UB.
+  - `AudioData` : échantillons entrelacés + fréquence + canaux.
+- +6 tests (total : 97) : round-trip mono, stéréo, `frameCount`, paramètres
+  invalides, fichier absent, données non-WAV rejetées.
+- `WavFile.cpp` déclaré dans le `.jucer` (garde-fou vert).
+
+### Reste à câbler
+- Import d'un WAV dans une piste de looper ; export du mix (rendu offline du
+  moteur → `AudioData` → `write`).
+
+---
+
 ## 2026-06-16 — Étape 9 : sauvegarde / chargement de projet
 
 ### Livré (priorité fonctionnelle n°3)
