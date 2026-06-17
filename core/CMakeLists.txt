@@ -8,6 +8,7 @@ add_library(voicelive_core
     src/LooperTrack.cpp
     src/Transport.cpp
     src/ProjectSerializer.cpp
+    src/Music.cpp
 )
 add_library(voicelive::core ALIAS voicelive_core)
 
@@ -28,6 +29,7 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_transport.cpp
         tests/test_project.cpp
         tests/test_project_serializer.cpp
+        tests/test_music.cpp
     )
     target_link_libraries(core_tests PRIVATE voicelive::core voicelive::testing)
 

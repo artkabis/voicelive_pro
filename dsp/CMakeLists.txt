@@ -7,6 +7,7 @@ add_library(voicelive_dsp
     src/EffectChain.cpp
     src/Chorus.cpp
     src/Wah.cpp
+    src/PitchDetector.cpp
 )
 add_library(voicelive::dsp ALIAS voicelive_dsp)
 
@@ -26,6 +27,7 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_effect_chain.cpp
         tests/test_chorus.cpp
         tests/test_wah.cpp
+        tests/test_pitch_detector.cpp
     )
     target_link_libraries(dsp_tests PRIVATE voicelive::dsp voicelive::testing)
 

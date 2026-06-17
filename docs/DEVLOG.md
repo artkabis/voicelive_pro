@@ -84,6 +84,29 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 13 : accordeur + 🎉 APK Android vert
+
+### 🎉 APK Android
+- Le dernier verrou (`std::from_chars` flottant absent de la libc++ du NDK,
+  corrigé en `strtod`) levé → **le build Android est VERT** : l'**APK debug
+  signé** (~31 Mo) est publié en artefact CI (`VoiceLivePro-debug-apk`),
+  téléchargeable et sideloadable.
+
+### Livré (priorité fonctionnelle n°6 : accordeur)
+- **`core::music`** : conversion fréquence → note (12-TET, A4 = 440 Hz) + écart
+  en cents, nom de note et octave. Pur, sans dépendance.
+- **`dsp::PitchDetector`** : estimation de la fondamentale par fonction de
+  différence carrée normalisée (NSDF / McLeod) + interpolation parabolique.
+- +9 tests (total : 121) : conversion (La4, Do4, cents, fréquence invalide),
+  détection (La 440, Mi grave 82 Hz, silence), mapping hauteur → note.
+
+### Effets (rappel #5, déjà livré) : Chorus + Wah.
+
+### Prochaine priorité
+7. Mastering (EQ / compresseur). Puis #8 : UI.
+
+---
+
 ## 2026-06-17 — Étape 12 : export du mix → WAV
 
 ### Livré

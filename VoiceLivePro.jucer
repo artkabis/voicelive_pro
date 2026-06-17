@@ -20,6 +20,8 @@
             file="core/src/Transport.cpp"/>
       <FILE id="coreSer" name="ProjectSerializer.cpp" compile="1" resource="0"
             file="core/src/ProjectSerializer.cpp"/>
+      <FILE id="coreMusic" name="Music.cpp" compile="1" resource="0"
+            file="core/src/Music.cpp"/>
     </GROUP>
     <GROUP id="grpDsp" name="dsp">
       <FILE id="dspReverb" name="Reverb.cpp" compile="1" resource="0"
@@ -32,6 +34,8 @@
             file="dsp/src/Chorus.cpp"/>
       <FILE id="dspWah" name="Wah.cpp" compile="1" resource="0"
             file="dsp/src/Wah.cpp"/>
+      <FILE id="dspPitch" name="PitchDetector.cpp" compile="1" resource="0"
+            file="dsp/src/PitchDetector.cpp"/>
     </GROUP>
     <GROUP id="grpEngine" name="engine">
       <FILE id="engMixer" name="Mixer.cpp" compile="1" resource="0"

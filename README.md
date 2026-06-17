@@ -89,6 +89,12 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 - **Import / export WAV** (`engine::wav`) : lecture (PCM 16 bits / float 32 bits)
   et écriture (PCM 16 bits), parseur borné et validé.
 
+### 🎸 Accordeur (`dsp` + `core`)
+- **Détection de hauteur** (`dsp::PitchDetector`, méthode NSDF/McLeod) :
+  estime la fondamentale d'une fenêtre audio.
+- **Conversion musicale** (`core::music`) : fréquence → note (12-TET, A4=440) +
+  écart en cents → affichage d'accordeur.
+
 ### 🖥️ Application (`app`, JUCE)
 - App desktop : ouverture audio (2 in / 2 out), pont moteur, **UI de transport**
   (Record/Play/Stop/Clear), commandes via la file lock-free.
@@ -178,7 +184,8 @@ Le build Android ne se fait pas en local sans NDK ; détails dans
 
 ## 🗺️ Roadmap
 
-- [ ] Stabiliser le pipeline APK Android (en cours).
+- [x] Pipeline APK Android : **APK debug signé, généré et téléchargeable** en
+      artefact CI (`VoiceLivePro-debug-apk`).
 - [ ] 3ᵉ effet (chorus / wah) + insertion d'effets pilotée en temps réel.
 - [ ] UI multipiste complète (niveaux, sélection d'effets).
 - [ ] Sauvegarde/chargement de projet (sérialisation de `core::Project`).
