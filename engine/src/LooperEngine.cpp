@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <span>
+#include <string>
+#include <vector>
 
 #include "voicelive/core/AudioParams.hpp"
 #include "voicelive/core/LooperTrack.hpp"
@@ -12,6 +14,7 @@
 #include "voicelive/core/Transport.hpp"
 #include "voicelive/engine/Mixer.hpp"
 #include "voicelive/engine/TrackProcessor.hpp"
+#include "voicelive/engine/WavFile.hpp"
 
 namespace voicelive::engine {
 
@@ -78,6 +81,40 @@ core::Status LooperEngine::applyCommand(const EngineCommand& command) {
             break;  // déjà traité plus haut
     }
     return core::Status::success();
+}
+
+core::Status LooperEngine::importTrack(std::size_t index, const wav::AudioData& audio) {
+    if (index >= tracks_.size()) {
+        return core::Status::failure(core::ErrorCode::OutOfRange, "Index de piste hors bornes");
+    }
+    if (audio.channels == 0) {
+        return core::Status::failure(core::ErrorCode::InvalidArgument, "Audio sans canal");
+    }
+
+    const std::size_t frames = audio.frameCount();
+    std::vector<float> mono(frames, 0.0F);
+    const auto channels = static_cast<float>(audio.channels);
+    for (std::size_t frame = 0; frame < frames; ++frame) {
+        float sum = 0.0F;
+        for (unsigned channel = 0; channel < audio.channels; ++channel) {
+            sum += audio.samples[(frame * audio.channels) + channel];
+        }
+        mono[frame] = sum / channels;
+    }
+
+    tracks_[index].loadContent(mono);
+    if (masterLength_ == 0 && frames > 0) {
+        masterLength_ = frames;  // un sample importé peut servir de référence
+    }
+    return core::Status::success();
+}
+
+core::Status LooperEngine::importTrackFromFile(std::size_t index, const std::string& path) {
+    auto audio = wav::read(path);
+    if (!audio.ok()) {
+        return core::Status::failure(audio.error().code, audio.error().message);
+    }
+    return importTrack(index, audio.value());
 }
 
 void LooperEngine::alignTrackLoop(TrackProcessor& processor) {

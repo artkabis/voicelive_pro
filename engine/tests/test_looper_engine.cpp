@@ -13,6 +13,7 @@
 #include "voicelive/core/Transport.hpp"
 #include "voicelive/dsp/Delay.hpp"
 #include "voicelive/engine/LooperEngine.hpp"
+#include "voicelive/engine/WavFile.hpp"
 #include "voicelive_testing/testing.hpp"
 
 using voicelive::core::Bpm;
@@ -175,6 +176,71 @@ TEST(LooperEngine, metronome_se_mixe_dans_la_sortie) {
         peak = std::max(peak, std::abs(sample));
     }
     CHECK(peak > 0.0F);  // un clic est présent au premier temps
+}
+
+TEST(LooperEngine, import_charge_un_sample_mono_dans_une_piste) {
+    LooperEngine engine;
+    initEngine(engine, 2);
+
+    voicelive::engine::wav::AudioData data;
+    data.channels = 1;
+    data.sampleRate = 48000;
+    data.samples = {0.2F, 0.2F, 0.2F, 0.2F};
+
+    REQUIRE(engine.importTrack(0, data).ok());
+    CHECK(engine.track(0)->track().state() == TrackState::Playing);
+    CHECK(engine.track(0)->audio().length() == 4U);
+
+    const std::array<float, 4> silence{};
+    std::vector<float> out(4, 0.0F);
+    engine.process(out, silence);
+    CHECK_NEAR(out[0], 0.2F, 1e-6);  // le sample importé est joué
+}
+
+TEST(LooperEngine, import_downmixe_le_stereo_en_mono) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+
+    voicelive::engine::wav::AudioData data;
+    data.channels = 2;
+    data.samples = {0.0F, 0.4F, 0.0F, 0.4F};  // 2 frames → moyenne 0.2
+
+    REQUIRE(engine.importTrack(0, data).ok());
+    CHECK(engine.track(0)->audio().length() == 2U);
+
+    const std::array<float, 2> silence{};
+    std::vector<float> out(2, 0.0F);
+    engine.process(out, silence);
+    CHECK_NEAR(out[0], 0.2F, 1e-6);
+}
+
+TEST(LooperEngine, import_index_invalide_rejete) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+    voicelive::engine::wav::AudioData data;
+    data.channels = 1;
+    data.samples = {0.1F};
+    CHECK(!engine.importTrack(9, data).ok());
+}
+
+TEST(LooperEngine, import_depuis_fichier_wav) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+
+    voicelive::engine::wav::AudioData data;
+    data.channels = 1;
+    data.samples = {0.5F, 0.5F};
+    REQUIRE(voicelive::engine::wav::write("vlpro_import.wav", data).ok());
+
+    REQUIRE(engine.importTrackFromFile(0, "vlpro_import.wav").ok());
+    CHECK(engine.track(0)->audio().length() == 2U);
+    CHECK(engine.track(0)->track().state() == TrackState::Playing);
+}
+
+TEST(LooperEngine, import_fichier_absent_rejete) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+    CHECK(!engine.importTrackFromFile(0, "chemin/inexistant/sample.wav").ok());
 }
 
 TEST(LooperEngine, chaine_d_effets_par_piste) {

@@ -64,6 +64,27 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 11 : câblage import WAV → moteur + APK Android signé
+
+### Livré
+- **`TrackProcessor::loadContent`** : charge un buffer mono dans une piste et la
+  passe en lecture (Empty → Recording → Playing en interne).
+- **`LooperEngine::importTrack`** : downmixe un `wav::AudioData` (entrelacé,
+  mono/stéréo) en mono et le charge dans une piste ; devient la référence
+  maître s'il n'y en a pas. **`importTrackFromFile`** : lit un WAV puis importe.
+- +5 tests (total : 102) : import mono, downmix stéréo, index invalide, import
+  fichier, fichier absent.
+
+### CI Android — dernier verrou levé
+- Le C++ cross-compile pour `arm64-v8a` ✅, mais Gradle échouait à la
+  **signature** : `~/.android/debug.keystore` absent du runner. Ajout d'une
+  étape qui génère le keystore debug standard avant `assembleDebug`.
+
+### Reste
+- Export du mix (rendu offline → WAV). Puis #5 (chorus/wah).
+
+---
+
 ## 2026-06-16 — Étape 10 : import / export audio WAV
 
 ### Livré (priorité fonctionnelle n°4)

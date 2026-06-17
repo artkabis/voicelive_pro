@@ -51,6 +51,15 @@ public:
     /// Force la période de boucle (synchronisation sur la piste maître).
     void setLoopLength(std::size_t length) noexcept { audio_.setLoopLength(length); }
 
+    /// Charge un contenu mono dans la piste et la met en lecture (import WAV).
+    /// Hors temps réel (peut écrire dans le buffer pré-alloué).
+    void loadContent(std::span<const float> samples) noexcept {
+        clearTrack();
+        audio_.append(samples);
+        static_cast<void>(track_.record());
+        static_cast<void>(track_.finishRecording());
+    }
+
     // --- Transitions (état + audio maintenus cohérents) -------------------
     core::Status startRecording() {
         const core::Status status = track_.record();

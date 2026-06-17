@@ -26,6 +26,7 @@
 #include "voicelive/engine/Metronome.hpp"
 #include "voicelive/engine/RingBuffer.hpp"
 #include "voicelive/engine/TrackProcessor.hpp"
+#include "voicelive/engine/WavFile.hpp"
 
 namespace voicelive::engine {
 
@@ -78,6 +79,14 @@ public:
     [[nodiscard]] dsp::EffectChain* effectsForTrack(std::size_t index) noexcept {
         return index < tracks_.size() ? &tracks_[index].effects() : nullptr;
     }
+
+    // --- Import audio (charger un sample dans une piste) ------------------
+    /// Charge des données audio (downmixées en mono) dans une piste, qui passe
+    /// en lecture. Hors temps réel.
+    core::Status importTrack(std::size_t index, const wav::AudioData& audio);
+
+    /// Charge un fichier WAV dans une piste.
+    core::Status importTrackFromFile(std::size_t index, const std::string& path);
 
     // --- Contrôle synchrone validé (renvoie Status) -----------------------
     core::Status recordTrack(std::size_t i) { return applyCommand({Cmd::Record, i}); }
