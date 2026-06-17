@@ -95,6 +95,12 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 - **Conversion musicale** (`core::music`) : fréquence → note (12-TET, A4=440) +
   écart en cents → affichage d'accordeur.
 
+### 🎛️ Mastering (`dsp`)
+- **Compresseur** (`dsp::Compressor`) : seuil / ratio / attaque / relâche /
+  makeup, détecteur de crête.
+- **Égaliseur 3 bandes** (`dsp::Equalizer`) : low shelf / mid peak / high shelf
+  (biquads RBJ) ; gains nuls = passthrough exact.
+
 ### 🖥️ Application (`app`, JUCE)
 - App desktop : ouverture audio (2 in / 2 out), pont moteur, **UI de transport**
   (Record/Play/Stop/Clear), commandes via la file lock-free.

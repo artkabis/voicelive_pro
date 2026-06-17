@@ -84,6 +84,23 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 14 : mastering (compresseur + égaliseur)
+
+### Livré (priorité fonctionnelle n°7)
+- **`dsp::Compressor`** : compresseur de dynamique (détecteur de crête,
+  attaque/relâche, ratio, seuil, makeup).
+- **`dsp::Equalizer`** : 3 bandes (low shelf / mid peak / high shelf) en biquads
+  RBJ ; gains nuls = passthrough exact (filtres identité).
+- Tous deux dérivent de `dsp::Effect` → composables en chaîne de mastering via
+  `EffectChain`.
+- +8 tests (total : 129) : silence, sous/au-dessus du seuil, passthrough plat,
+  boost grave, sortie finie, paramètres clampés.
+
+### Prochaine priorité
+8. UI (exposer multipiste + effets), puis câblage des modules dans l'app.
+
+---
+
 ## 2026-06-17 — Étape 13 : accordeur + 🎉 APK Android vert
 
 ### 🎉 APK Android
