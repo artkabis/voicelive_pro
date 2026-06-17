@@ -84,6 +84,26 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 16 : UI multipiste JUCE (priorité n°8)
+
+### Livré (`app/MainComponent`)
+- **UI multipiste** (3 pistes) : Rec/Play/Stop/Clear + slider de gain + Mute par
+  piste, via la **file lock-free** du moteur (RT-safe).
+- **Transport** : bouton métronome + slider BPM.
+- **Mastering** : égaliseur 3 bandes (sliders Grave/Médium/Aigu) inséré dans le
+  bus master.
+- **Accordeur** : label rafraîchi par un `Timer` (10 Hz) lisant une fenêtre
+  d'analyse alimentée par le callback audio → `engine.tune` → note + cents.
+
+### Notes
+- L'UI n'est **pas testable hors CI** (pas de JUCE dans l'environnement de dev) :
+  validée par les builds CI **desktop** et **APK Android**.
+- Réglages continus (BPM, EQ, métronome) écrits directement (course bénigne sur
+  scalaires) ; actions de piste via la file lock-free. Toggle d'effets par piste
+  à chaud = itération suivante (nécessite un bypass RT-safe).
+
+---
+
 ## 2026-06-17 — Étape 15 : câblage mastering + accordeur dans le moteur
 
 ### Livré

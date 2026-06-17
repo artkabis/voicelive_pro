@@ -1,20 +1,25 @@
 // SPDX-License-Identifier: MIT
 //
-// MainComponent — pont JUCE ↔ moteur + UI minimale (transport piste 1).
+// MainComponent — pont JUCE ↔ moteur + UI multipiste.
 //
-// Le composant est à la fois la source audio (AudioAppComponent) et l'interface.
-// La conversion canaux ↔ mono est déléguée à engine::channels (testée). Les
-// boutons déposent des commandes dans la file lock-free du moteur ; le thread
-// audio les applique au début de chaque bloc.
+// Le composant est la source audio (AudioAppComponent) et l'interface. Les
+// actions de piste (record/play/stop/clear/gain/mute) passent par la file
+// lock-free du moteur (appliquées sur le thread audio). Les réglages continus
+// (BPM, métronome, égaliseur de mastering) sont écrits directement : course
+// bénigne sur des scalaires, sans réallocation. L'accordeur est rafraîchi par
+// un Timer qui lit une fenêtre d'analyse alimentée par le callback audio.
 #pragma once
 
 #include <juce_audio_utils/juce_audio_utils.h>
 
+#include <array>
+#include <cstddef>
 #include <vector>
 
+#include "voicelive/dsp/Equalizer.hpp"
 #include "voicelive/engine/LooperEngine.hpp"
 
-class MainComponent final : public juce::AudioAppComponent {
+class MainComponent final : public juce::AudioAppComponent, private juce::Timer {
 public:
     MainComponent();
     ~MainComponent() override;
@@ -26,22 +31,46 @@ public:
     void resized() override;
 
 private:
-    void postRecordOrFinish();
-    void post(voicelive::engine::EngineCommand::Action action);
-
     static constexpr std::size_t kTrackCount = 3;
-    static constexpr std::size_t kActiveTrack = 0;
     static constexpr int kMaxChannels = 8;
+    static constexpr std::size_t kAnalysisSize = 4096;
+
+    /// Contrôles d'une piste.
+    struct TrackStrip {
+        juce::Label label;
+        juce::TextButton recordButton;
+        juce::TextButton playButton;
+        juce::TextButton stopButton;
+        juce::TextButton clearButton;
+        juce::Slider gainSlider;
+        juce::ToggleButton muteButton;
+    };
+
+    void setupTrackStrip(std::size_t index);
+    void recordOrFinish(std::size_t index);
+    void postCommand(voicelive::engine::EngineCommand::Action action, std::size_t track, float gain,
+                     bool muted);
+    void timerCallback() override;
 
     voicelive::engine::LooperEngine engine_;
+    voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possédé par la chaîne de mastering
+
     std::vector<float> monoIn_;
     std::vector<float> monoOut_;
+    std::vector<float> analysis_;  // fenêtre glissante pour l'accordeur
 
     juce::Label titleLabel_;
-    juce::TextButton recordButton_{"Record"};
-    juce::TextButton playButton_{"Play"};
-    juce::TextButton stopButton_{"Stop"};
-    juce::TextButton clearButton_{"Clear"};
+    juce::Label tunerLabel_;
+    std::array<TrackStrip, kTrackCount> strips_;
+
+    juce::Label transportLabel_;
+    juce::ToggleButton metronomeButton_;
+    juce::Slider bpmSlider_;
+
+    juce::Label masterLabel_;
+    juce::Slider lowEqSlider_;
+    juce::Slider midEqSlider_;
+    juce::Slider highEqSlider_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

@@ -102,8 +102,9 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
   (biquads RBJ) ; gains nuls = passthrough exact.
 
 ### 🖥️ Application (`app`, JUCE)
-- App desktop : ouverture audio (2 in / 2 out), pont moteur, **UI de transport**
-  (Record/Play/Stop/Clear), commandes via la file lock-free.
+- **UI multipiste** : 3 pistes (Rec/Play/Stop/Clear + gain + mute) via la file
+  lock-free, **métronome + BPM**, **égaliseur de mastering** (3 bandes) et
+  **accordeur** (affichage note + cents rafraîchi par Timer).
 - Pipelines CI : **binaire desktop** et **APK Android (debug)** en artefacts.
 
 ### 🛡️ Robustesse transverse
