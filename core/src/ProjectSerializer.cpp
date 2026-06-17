@@ -3,6 +3,7 @@
 
 #include <charconv>
 #include <cstddef>
+#include <cstdlib>
 #include <fstream>
 #include <ios>
 #include <iterator>
@@ -40,10 +41,17 @@ struct ParsedProject {
 };
 
 std::optional<double> toDouble(std::string_view text) {
-    double value = 0.0;
-    const auto* end = text.data() + text.size();
-    const auto result = std::from_chars(text.data(), end, value);
-    if (result.ec != std::errc{} || result.ptr != end) {
+    if (text.empty()) {
+        return std::nullopt;
+    }
+    // NB : la libc++ du NDK Android ne fournit pas std::from_chars pour les
+    // flottants ; std::strtod est portable (et sans exception, contrairement à
+    // std::stod). On exige que toute la chaîne soit consommée.
+    const std::string buffer{text};
+    const char* begin = buffer.c_str();
+    char* parseEnd = nullptr;
+    const double value = std::strtod(begin, &parseEnd);
+    if (parseEnd != begin + buffer.size()) {
         return std::nullopt;
     }
     return value;
