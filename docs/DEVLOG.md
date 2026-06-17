@@ -64,6 +64,26 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 13 : effets Chorus & Wah (priorité n°5)
+
+### Livré
+- **`dsp::Chorus`** : ligne de retard courte (~15 ms) modulée par un LFO, avec
+  lecture fractionnaire (interpolation linéaire) ; rate/depth/mix bornés.
+- **`dsp::Wah`** : filtre state-variable (Chamberlin) passe-bande dont la
+  fréquence centrale est balayée par un LFO (auto-wah) ; coefficient borné pour
+  la stabilité ; fréquences/résonance/mix bornés.
+- Tous deux sur l'interface `Effect` → insérables dans n'importe quelle
+  `EffectChain` (démonstration de la modularité : aucun autre module modifié).
+- +8 tests (total : 112) : passthrough mix=0, silence, sortie finie/stable,
+  paramètres clampés.
+- `Chorus.cpp` / `Wah.cpp` déclarés dans le `.jucer` (garde-fou vert).
+
+### Note portabilité
+- `-Wdouble-promotion` attrapé localement (float `ratio` × `double pi`) — casté
+  explicitement, comme on le ferait pour la libc++ Android.
+
+---
+
 ## 2026-06-17 — Étape 12 : export du mix → WAV
 
 ### Livré

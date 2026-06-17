@@ -28,6 +28,10 @@
             file="dsp/src/Delay.cpp"/>
       <FILE id="dspChain" name="EffectChain.cpp" compile="1" resource="0"
             file="dsp/src/EffectChain.cpp"/>
+      <FILE id="dspChorus" name="Chorus.cpp" compile="1" resource="0"
+            file="dsp/src/Chorus.cpp"/>
+      <FILE id="dspWah" name="Wah.cpp" compile="1" resource="0"
+            file="dsp/src/Wah.cpp"/>
     </GROUP>
     <GROUP id="grpEngine" name="engine">
       <FILE id="engMixer" name="Mixer.cpp" compile="1" resource="0"

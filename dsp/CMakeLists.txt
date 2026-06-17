@@ -5,6 +5,8 @@ add_library(voicelive_dsp
     src/Reverb.cpp
     src/Delay.cpp
     src/EffectChain.cpp
+    src/Chorus.cpp
+    src/Wah.cpp
 )
 add_library(voicelive::dsp ALIAS voicelive_dsp)
 
@@ -22,6 +24,8 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_reverb.cpp
         tests/test_delay.cpp
         tests/test_effect_chain.cpp
+        tests/test_chorus.cpp
+        tests/test_wah.cpp
     )
     target_link_libraries(dsp_tests PRIVATE voicelive::dsp voicelive::testing)
 

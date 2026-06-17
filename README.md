@@ -72,6 +72,8 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 ### 🎚️ Effets (`dsp`)
 - **Reverb** (algorithme Freeverb : 8 combs + 4 allpass).
 - **Delay** (écho à ligne de retard : délai, feedback, mix).
+- **Chorus** (ligne de retard modulée par LFO : rate, depth, mix).
+- **Wah** (passe-bande résonant balayé par LFO : fréquences, résonance, mix).
 - **Chaîne d'effets par piste** (`EffectChain`) : effets ordonnés, insérables à
   chaud, interface `Effect` commune à contrat temps réel strict.
 
