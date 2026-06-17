@@ -243,6 +243,45 @@ TEST(LooperEngine, import_fichier_absent_rejete) {
     CHECK(!engine.importTrackFromFile(0, "chemin/inexistant/sample.wav").ok());
 }
 
+TEST(LooperEngine, export_du_mix_vers_wav) {
+    LooperEngine engine;
+    initEngine(engine, 2);
+
+    voicelive::engine::wav::AudioData a;
+    a.channels = 1;
+    a.samples = {0.3F, 0.3F, 0.3F, 0.3F};
+    REQUIRE(engine.importTrack(0, a).ok());
+
+    voicelive::engine::wav::AudioData b;
+    b.channels = 1;
+    b.samples = {0.2F, 0.2F, 0.2F, 0.2F};
+    REQUIRE(engine.importTrack(1, b).ok());
+
+    REQUIRE(engine.exportMixToFile("vlpro_mix.wav", 4).ok());
+
+    auto loaded = voicelive::engine::wav::read("vlpro_mix.wav");
+    REQUIRE(loaded.ok());
+    CHECK(loaded.value().channels == 1U);
+    REQUIRE(loaded.value().samples.size() == 4U);
+    CHECK_NEAR(loaded.value().samples[0], 0.5F, 1e-3);  // 0.3 + 0.2
+}
+
+TEST(LooperEngine, render_mix_est_deterministe_et_preserve_l_etat) {
+    LooperEngine engine;
+    initEngine(engine, 1);
+    voicelive::engine::wav::AudioData a;
+    a.channels = 1;
+    a.samples = {0.1F, 0.2F, 0.3F, 0.4F};
+    REQUIRE(engine.importTrack(0, a).ok());
+
+    const auto first = engine.renderMix(4);
+    const auto second = engine.renderMix(4);  // l'état est restauré → même rendu
+    REQUIRE(first.samples.size() == 4U);
+    REQUIRE(second.samples.size() == 4U);
+    CHECK_NEAR(first.samples[1], second.samples[1], 1e-6);
+    CHECK_NEAR(first.samples[3], second.samples[3], 1e-6);
+}
+
 TEST(LooperEngine, chaine_d_effets_par_piste) {
     LooperEngine engine;
     initEngine(engine, 1);

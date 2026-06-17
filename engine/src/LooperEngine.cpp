@@ -117,6 +117,41 @@ core::Status LooperEngine::importTrackFromFile(std::size_t index, const std::str
     return importTrack(index, audio.value());
 }
 
+wav::AudioData LooperEngine::renderMix(std::size_t frames) {
+    // Sauvegarde de l'état de lecture (l'export ne doit pas perturber le live).
+    std::vector<std::size_t> savedPlayheads(tracks_.size());
+    for (std::size_t i = 0; i < tracks_.size(); ++i) {
+        savedPlayheads[i] = tracks_[i].playhead();
+        tracks_[i].setPlayhead(0);  // rendu depuis le début des boucles
+    }
+    const bool metronomeWasEnabled = metronome_.isEnabled();
+    metronome_.setEnabled(false);  // mix exporté = pistes seules, sans clic
+
+    wav::AudioData mix;
+    mix.channels = 1;
+    mix.sampleRate = transport_.sampleRate().hz();
+    mix.samples.assign(frames, 0.0F);
+
+    const std::size_t block = std::max<std::size_t>(scratch_.size(), 1);
+    const std::vector<float> silence(block, 0.0F);
+    for (std::size_t pos = 0; pos < frames; pos += block) {
+        const std::size_t count = std::min(block, frames - pos);
+        process(std::span<float>{mix.samples}.subspan(pos, count),
+                std::span<const float>{silence}.subspan(0, count));
+    }
+
+    // Restauration de l'état.
+    for (std::size_t i = 0; i < tracks_.size(); ++i) {
+        tracks_[i].setPlayhead(savedPlayheads[i]);
+    }
+    metronome_.setEnabled(metronomeWasEnabled);
+    return mix;
+}
+
+core::Status LooperEngine::exportMixToFile(const std::string& path, std::size_t frames) {
+    return wav::write(path, renderMix(frames));
+}
+
 void LooperEngine::alignTrackLoop(TrackProcessor& processor) {
     const std::size_t recorded = processor.audio().length();
     if (recorded == 0) {

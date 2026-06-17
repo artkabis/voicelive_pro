@@ -40,6 +40,7 @@ public:
     [[nodiscard]] const core::LooperTrack& track() const noexcept { return track_; }
     [[nodiscard]] const LoopAudio& audio() const noexcept { return audio_; }
     [[nodiscard]] std::size_t playhead() const noexcept { return playhead_; }
+    void setPlayhead(std::size_t position) noexcept { playhead_ = position; }
 
     /// Chaîne d'effets de la piste (ajout d'effets hors temps réel).
     [[nodiscard]] dsp::EffectChain& effects() noexcept { return effects_; }

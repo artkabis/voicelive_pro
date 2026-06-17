@@ -64,6 +64,23 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-17 — Étape 12 : export du mix → WAV
+
+### Livré
+- **`LooperEngine::renderMix(frames)`** : rendu offline du mix (mono) depuis le
+  début des boucles, **métronome exclu**, en réutilisant le chemin temps réel
+  `process()` par blocs. **Préserve l'état de lecture** (t, têtes de lecture
+  sauvegardées/restaurées) → déterministe et non destructif.
+- **`exportMixToFile(path, frames)`** : rendu + écriture WAV.
+- `TrackProcessor::setPlayhead` (pour sauvegarde/restauration).
+- +2 tests (total : 104) : export 2 pistes → WAV relu (mix correct), rendu
+  déterministe et état préservé.
+
+La boucle import/export audio est complète : **charger un sample** et
+**exporter le mix**.
+
+---
+
 ## 2026-06-17 — Étape 11 : câblage import WAV → moteur + APK Android signé
 
 ### Livré

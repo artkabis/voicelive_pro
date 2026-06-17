@@ -88,6 +88,14 @@ public:
     /// Charge un fichier WAV dans une piste.
     core::Status importTrackFromFile(std::size_t index, const std::string& path);
 
+    // --- Export audio (rendu du mix) -------------------------------------
+    /// Rend `frames` échantillons du mix (mono) depuis le début des boucles,
+    /// métronome exclu. N'altère pas l'état de lecture courant. Hors temps réel.
+    [[nodiscard]] wav::AudioData renderMix(std::size_t frames);
+
+    /// Rend le mix et l'écrit dans un fichier WAV.
+    core::Status exportMixToFile(const std::string& path, std::size_t frames);
+
     // --- Contrôle synchrone validé (renvoie Status) -----------------------
     core::Status recordTrack(std::size_t i) { return applyCommand({Cmd::Record, i}); }
     core::Status finishRecordingTrack(std::size_t i) {
