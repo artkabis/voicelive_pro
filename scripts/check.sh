@@ -32,6 +32,13 @@ cmake --build build-release -j"$(nproc)"
 ctest --test-dir build-release --output-on-failure
 
 echo "▶ 5/5  Analyse statique (clang-tidy)"
-find core dsp engine -name '*.cpp' -print0 | xargs -0 -I{} "$CLANG_TIDY" --quiet -p "$BUILD_DIR" {}
+tidy_status=0
+while IFS= read -r file; do
+    if ! output=$("$CLANG_TIDY" --quiet -p "$BUILD_DIR" "$file" 2>&1); then
+        echo "$output"
+        tidy_status=1
+    fi
+done < <(find core dsp engine -name '*.cpp')
+[ "$tidy_status" -eq 0 ] || exit 1
 
 echo "✅ Toutes les portes sont vertes."

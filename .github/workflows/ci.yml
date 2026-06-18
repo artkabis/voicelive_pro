@@ -71,6 +71,17 @@ jobs:
       - name: Générer la base de compilation
         run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
       - name: clang-tidy
+        # N'affiche la sortie que pour les fichiers en échec (les "N warnings
+        # generated" viennent des en-têtes système, hors de notre code).
         run: |
-          find core dsp engine -name '*.cpp' \
-            | xargs -I{} clang-tidy-18 --quiet -p build {}
+          status=0
+          while IFS= read -r file; do
+            if ! output=$(clang-tidy-18 --quiet -p build "$file" 2>&1); then
+              echo "::group::clang-tidy: $file"
+              echo "$output"
+              echo "::endgroup::"
+              status=1
+            fi
+          done < <(find core dsp engine -name '*.cpp')
+          [ "$status" -eq 0 ] && echo "clang-tidy : OK (aucune erreur)"
+          exit $status
