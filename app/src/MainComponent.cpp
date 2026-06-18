@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <array>
+#include <complex>
+#include <cstddef>
 #include <memory>
 #include <span>
 
@@ -45,7 +47,179 @@ const char* actionName(EngineCommand::Action action) {
     }
     return "?";
 }
+
+// FFT Cooley-Tukey radix-2 DIT, in-place, sur tableau complexe de taille 2^N.
+// Applique une fenetre de Hann sur l'entree et calcule les magnitudes en sortie.
+// input  : kFftSize echantillons reels
+// output : kFftSize/2 magnitudes normalisees [0..1]
+template <int kFftSize>
+void magnitudeSpectrum(const float* input, float* output) {
+    using C = std::complex<float>;
+    std::array<C, kFftSize> buf;
+
+    for (int i = 0; i < kFftSize; ++i) {
+        const float w =
+            0.5F * (1.0F - std::cos(2.0F * juce::MathConstants<float>::pi * i / (kFftSize - 1)));
+        buf[static_cast<std::size_t>(i)] = C(input[i] * w, 0.0F);
+    }
+
+    // Permutation bit-reverse
+    for (int i = 1, j = 0; i < kFftSize; ++i) {
+        int bit = kFftSize >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            std::swap(buf[static_cast<std::size_t>(i)], buf[static_cast<std::size_t>(j)]);
+        }
+    }
+
+    // Papillons
+    for (int len = 2; len <= kFftSize; len <<= 1) {
+        const float ang = -2.0F * juce::MathConstants<float>::pi / static_cast<float>(len);
+        const C wlen(std::cos(ang), std::sin(ang));
+        for (int i = 0; i < kFftSize; i += len) {
+            C w(1.0F, 0.0F);
+            for (int j = 0; j < len / 2; ++j) {
+                const C u = buf[static_cast<std::size_t>(i + j)];
+                const C v = buf[static_cast<std::size_t>(i + j + len / 2)] * w;
+                buf[static_cast<std::size_t>(i + j)] = u + v;
+                buf[static_cast<std::size_t>(i + j + len / 2)] = u - v;
+                w *= wlen;
+            }
+        }
+    }
+
+    const float scale = 2.0F / static_cast<float>(kFftSize);
+    for (int i = 0; i < kFftSize / 2; ++i) {
+        output[i] = std::abs(buf[static_cast<std::size_t>(i)]) * scale;
+    }
+}
 }  // namespace
+
+// ─── TrackWaveform ────────────────────────────────────────────────────────────
+
+void MainComponent::TrackWaveform::setAudio(const voicelive::engine::LoopAudio* audio) noexcept {
+    audio_ = audio;
+}
+
+void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
+    const auto bounds = getLocalBounds().toFloat();
+    g.setColour(juce::Colour(0xFF0D1117));
+    g.fillRoundedRectangle(bounds, 4.0F);
+
+    if (audio_ == nullptr || audio_->length() == 0) {
+        g.setColour(juce::Colours::grey.withAlpha(0.35F));
+        g.setFont(juce::Font(juce::FontOptions{}.withHeight(11.0F)));
+        g.drawText("vide", bounds, juce::Justification::centred, false);
+        g.setColour(juce::Colours::grey.withAlpha(0.25F));
+        g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+        return;
+    }
+
+    const int w = getWidth();
+    const int h = getHeight();
+    const float midY = static_cast<float>(h) * 0.5F;
+    const std::size_t len = audio_->loopLength();
+
+    // Ligne centrale
+    g.setColour(juce::Colours::grey.withAlpha(0.25F));
+    g.drawHorizontalLine(static_cast<int>(midY), 2.0F, static_cast<float>(w) - 2.0F);
+
+    // Forme d'onde (peak-detection par pixel)
+    g.setColour(juce::Colour(0xFF00D4FF));
+    const int drawW = w - 4;
+    for (int px = 0; px < drawW; ++px) {
+        const std::size_t sBegin =
+            static_cast<std::size_t>(px) * len / static_cast<std::size_t>(drawW);
+        const std::size_t sEnd =
+            static_cast<std::size_t>(px + 1) * len / static_cast<std::size_t>(drawW);
+        float peak = 0.0F;
+        for (std::size_t s = sBegin; s < sEnd && s < len; ++s) {
+            peak = std::max(peak, std::abs(audio_->sampleAt(s)));
+        }
+        const float half = juce::jmin(peak, 1.0F) * (midY - 2.0F);
+        if (half > 0.5F) {
+            g.drawVerticalLine(px + 2, midY - half, midY + half);
+        }
+    }
+
+    g.setColour(juce::Colours::grey.withAlpha(0.25F));
+    g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+}
+
+// ─── SpectrumView ─────────────────────────────────────────────────────────────
+
+void MainComponent::SpectrumView::update(std::span<const float> analysis) {
+    if (static_cast<int>(analysis.size()) < kFftSize) {
+        return;
+    }
+    std::array<float, kFftSize / 2> mag;
+    magnitudeSpectrum<kFftSize>(analysis.data() + analysis.size() - kFftSize, mag.data());
+
+    // Lissage exponentiel
+    constexpr float kAlpha = 0.25F;
+    for (int i = 0; i < kFftSize / 2; ++i) {
+        smoothed_[static_cast<std::size_t>(i)] =
+            (1.0F - kAlpha) * smoothed_[static_cast<std::size_t>(i)] +
+            kAlpha * juce::jlimit(0.0F, 1.0F, mag[static_cast<std::size_t>(i)]);
+    }
+    hasData_ = true;
+    repaint();
+}
+
+void MainComponent::SpectrumView::paint(juce::Graphics& g) {
+    const auto bounds = getLocalBounds().toFloat();
+    g.setColour(juce::Colour(0xFF0D1117));
+    g.fillRoundedRectangle(bounds, 4.0F);
+
+    if (!hasData_) {
+        g.setColour(juce::Colours::grey.withAlpha(0.35F));
+        g.setFont(juce::Font(juce::FontOptions{}.withHeight(11.0F)));
+        g.drawText("Spectre temps-reel", bounds, juce::Justification::centred, false);
+        g.setColour(juce::Colours::grey.withAlpha(0.25F));
+        g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+        return;
+    }
+
+    const int w = getWidth();
+    const int h = getHeight();
+    // Affiche les 192 premieres bandes (0-18 kHz @ 48kHz) sur echelle log.
+    constexpr int kBins = 192;
+    const float barW = static_cast<float>(w) / static_cast<float>(kBins);
+
+    for (int i = 0; i < kBins && i < kFftSize / 2; ++i) {
+        const float level = smoothed_[static_cast<std::size_t>(i)];
+        const float barH = level * static_cast<float>(h - 2);
+        const float x = static_cast<float>(i) * barW;
+        const float y = static_cast<float>(h) - barH - 1.0F;
+
+        // Degrade couleur : bleu (grave) -> cyan -> vert (aigu)
+        const float t = static_cast<float>(i) / static_cast<float>(kBins);
+        const juce::Colour col =
+            juce::Colour(0xFF00D4FF).interpolatedWith(juce::Colour(0xFF00FF88), t);
+        g.setColour(col.withAlpha(0.85F));
+        g.fillRect(x, y, juce::jmax(1.0F, barW - 1.0F), barH);
+    }
+
+    // Graduations de frequence
+    g.setColour(juce::Colours::grey.withAlpha(0.4F));
+    g.setFont(juce::Font(juce::FontOptions{}.withHeight(9.0F)));
+    for (int khz : {1, 2, 4, 8}) {
+        const int bin = khz * 1000 * kFftSize / 48000;
+        if (bin < kBins) {
+            const float x = static_cast<float>(bin) * barW;
+            g.drawVerticalLine(static_cast<int>(x), 0.0F, static_cast<float>(h));
+            g.drawText(juce::String(khz) + "k", static_cast<int>(x) + 2, 2, 28, 14,
+                       juce::Justification::left, false);
+        }
+    }
+
+    g.setColour(juce::Colours::grey.withAlpha(0.25F));
+    g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+}
+
+// ─── AppLogger ────────────────────────────────────────────────────────────────
 
 void MainComponent::AppLogger::logMessage(const juce::String& message) {
     {
@@ -63,8 +237,9 @@ juce::String MainComponent::AppLogger::snapshot() const {
     return lines_.joinIntoString("\n");
 }
 
+// ─── MainComponent ────────────────────────────────────────────────────────────
+
 MainComponent::MainComponent() {
-    // Capture tous les logs (les nôtres + JUCE) pour les rendre copiables.
     juce::Logger::setCurrentLogger(&appLogger_);
     juce::Logger::writeToLog("VoiceLive Pro demarre");
 
@@ -83,12 +258,24 @@ MainComponent::MainComponent() {
     titleLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(22.0F)));
     contentPane_.addAndMakeVisible(titleLabel_);
 
+    // Accordeur + toggle ON/OFF
     tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
-    tunerLabel_.setJustificationType(juce::Justification::centred);
+    tunerLabel_.setJustificationType(juce::Justification::centredLeft);
     contentPane_.addAndMakeVisible(tunerLabel_);
 
+    tunerActiveButton_.setButtonText("Accordeur");
+    tunerActiveButton_.setToggleState(false, juce::dontSendNotification);
+    tunerActiveButton_.onClick = [this] {
+        if (!tunerActiveButton_.getToggleState()) {
+            tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
+        }
+    };
+    contentPane_.addAndMakeVisible(tunerActiveButton_);
+
+    // Pistes
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         setupTrackStrip(i);
+        contentPane_.addAndMakeVisible(waveforms_[i]);
     }
 
     // Transport : métronome + tempo.
@@ -152,6 +339,9 @@ MainComponent::MainComponent() {
         }
     };
 
+    // Spectre temps-réel
+    contentPane_.addAndMakeVisible(spectrumView_);
+
     // Panneau de diagnostic : rend l'app observable sur mobile (pas de console).
     diagView_.setMultiLine(true);
     diagView_.setReadOnly(true);
@@ -168,7 +358,6 @@ MainComponent::MainComponent() {
     contentPane_.addAndMakeVisible(copyButton_);
 
     analysis_.assign(kAnalysisSize, 0.0F);
-    // Taille initiale adaptée mobile (le système Android redimensionne au démarrage).
     setSize(400, 700);
     setAudioChannels(2, 2);
     startTimerHz(10);
@@ -234,7 +423,6 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
 
         if (const auto sr = SampleRate::create(rate); sr.ok()) {
             static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, blockSize));
-            // Trace visible via `adb logcat` sur Android (sinon invisible sur mobile).
             juce::Logger::writeToLog("VoiceLive: audio pret " + juce::String(rate) + " Hz, bloc " +
                                      juce::String(static_cast<int>(blockSize)));
         } else {
@@ -273,7 +461,7 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     const std::span<float> monoOut{monoOut_.data(), numSamples};
     channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
 
-    // Alimente la fenêtre d'analyse de l'accordeur (course bénigne avec le Timer).
+    // Alimente la fenêtre d'analyse pour l'accordeur et le spectre (course bénigne avec Timer).
     if (numSamples < analysis_.size()) {
         const std::size_t keep = analysis_.size() - numSamples;
         std::copy(analysis_.begin() + static_cast<std::ptrdiff_t>(numSamples), analysis_.end(),
@@ -285,7 +473,6 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     engine_.process(monoOut, monoIn);
 
     // Couper la sortie haut-parleur pendant l'enregistrement pour éviter le larsen.
-    // Le moteur enregistre quand même l'entrée micro correctement.
     if (anyTrackRecording_.load(std::memory_order_acquire)) {
         std::fill(monoOut.begin(), monoOut.end(), 0.0F);
     }
@@ -299,16 +486,31 @@ void MainComponent::timerCallback() {
     if (analysis_.empty()) {
         return;
     }
-    const auto note = engine_.tune(std::span<const float>{analysis_.data(), analysis_.size()});
-    if (!note.has_value()) {
-        tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
-        return;
+
+    // Accordeur (seulement si activé)
+    if (tunerActiveButton_.getToggleState()) {
+        const auto note = engine_.tune(std::span<const float>{analysis_.data(), analysis_.size()});
+        if (!note.has_value()) {
+            tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
+        } else {
+            const int cents = juce::roundToInt(note->cents);
+            const juce::String text = juce::String("Accordeur : ") + music::name(note->midi) +
+                                      juce::String(music::octave(note->midi)) + "   " +
+                                      (cents >= 0 ? "+" : "") + juce::String(cents) + " cents";
+            tunerLabel_.setText(text, juce::dontSendNotification);
+        }
     }
-    const int cents = juce::roundToInt(note->cents);
-    const juce::String text = juce::String("Accordeur : ") + music::name(note->midi) +
-                              juce::String(music::octave(note->midi)) + "   " +
-                              (cents >= 0 ? "+" : "") + juce::String(cents) + " cents";
-    tunerLabel_.setText(text, juce::dontSendNotification);
+
+    // Spectre temps-réel
+    spectrumView_.update(std::span<const float>{analysis_.data(), analysis_.size()});
+
+    // Waveforms des pistes
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            waveforms_[i].setAudio(&proc->audio());
+        }
+        waveforms_[i].repaint();
+    }
 
     updateDiagnostics();
 }
@@ -346,7 +548,7 @@ void MainComponent::updateDiagnostics() {
         text << "  Piste " << static_cast<int>(i) + 1 << " : "
              << voicelive::core::toString(track.state()) << "  gain "
              << juce::String(track.gain().linear(), 2) << (track.isMuted() ? "  [MUTE]" : "")
-             << "\n";
+             << "  " << static_cast<int>(processor->audio().length() / 48000) << "s\n";
     }
 
     text << "\n--- Journal (recent) ---\n" << appLogger_.snapshot();
@@ -360,42 +562,50 @@ void MainComponent::paint(juce::Graphics& g) {
 void MainComponent::resized() {
     viewport_.setBounds(getLocalBounds());
 
-    // Largeur utilisable = largeur du viewport moins la barre de défilement verticale.
     const int usableW = juce::jmax(300, viewport_.getMaximumVisibleWidth());
     const int pad = 12;
 
-    // Hauteurs fixes pour chaque section (px).
     constexpr int kTitleH = 34;
-    constexpr int kTunerH = 30;
-    constexpr int kRowH = 44;               // hauteur d'une rangée de boutons/slider
-    constexpr int kTrackH = kRowH * 2 + 6;  // 2 rangées par piste + séparation
+    constexpr int kTunerH = 34;  // ligne accordeur (toggle + label)
+    constexpr int kRowH = 44;
+    constexpr int kTrackCtrlH = kRowH * 2 + 6;  // 2 rangees de controles
+    constexpr int kWaveH = 52;                  // waveform par piste
+    constexpr int kTrackH = kTrackCtrlH + kWaveH + 4;
     constexpr int kTransH = 48;
     constexpr int kEqLblH = 26;
     constexpr int kEqRowH = 44;
+    constexpr int kSpecH = 90;  // vue spectre
     constexpr int kCopyH = 40;
-    constexpr int kDiagH = 220;
+    constexpr int kDiagH = 200;
     constexpr int kGap = 10;
 
     const int trackCount = static_cast<int>(kTrackCount);
     const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap +
                        trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
-                       3 * (kEqRowH + 4) + kGap + kCopyH + kGap / 2 + kDiagH + pad;
+                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kCopyH + kGap / 2 + kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
 
-    // Titre et accordeur.
+    // Titre
     titleLabel_.setBounds(area.removeFromTop(kTitleH));
     area.removeFromTop(kGap / 2);
-    tunerLabel_.setBounds(area.removeFromTop(kTunerH));
+
+    // Accordeur : [toggle] [label]
+    {
+        auto row = area.removeFromTop(kTunerH);
+        tunerActiveButton_.setBounds(row.removeFromLeft(110).reduced(2));
+        tunerLabel_.setBounds(row.reduced(2));
+    }
     area.removeFromTop(kGap);
 
-    // Pistes : 2 rangées chacune (boutons + gain/mute).
+    // Pistes
     const int w = area.getWidth();
-    for (TrackStrip& strip : strips_) {
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        TrackStrip& strip = strips_[i];
         auto trackArea = area.removeFromTop(kTrackH);
 
-        // Rangée 1 : label + boutons Rec/Play/Stop/Clear.
+        // Rangee 1 : label + boutons
         auto row1 = trackArea.removeFromTop(kRowH);
         const int labelW = 56;
         const int btnW = juce::jmax(42, (w - labelW) / 4);
@@ -407,15 +617,20 @@ void MainComponent::resized() {
 
         trackArea.removeFromTop(6);
 
-        // Rangée 2 : slider gain + bouton Mute.
+        // Rangee 2 : gain + mute
         auto row2 = trackArea.removeFromTop(kRowH);
         strip.muteButton.setBounds(row2.removeFromRight(64).reduced(2));
         strip.gainSlider.setBounds(row2.reduced(2));
 
+        trackArea.removeFromTop(4);
+
+        // Waveform
+        waveforms_[i].setBounds(trackArea.removeFromTop(kWaveH));
+
         area.removeFromTop(kGap / 2);
     }
 
-    // Transport : Métronome + BPM.
+    // Transport
     area.removeFromTop(kGap);
     {
         auto row = area.removeFromTop(kTransH);
@@ -423,7 +638,7 @@ void MainComponent::resized() {
         bpmSlider_.setBounds(row.reduced(4));
     }
 
-    // Égaliseur master 3 bandes (sliders horizontaux + labels).
+    // EQ
     area.removeFromTop(kGap);
     masterLabel_.setBounds(area.removeFromTop(kEqLblH));
     area.removeFromTop(4);
@@ -441,7 +656,11 @@ void MainComponent::resized() {
         area.removeFromTop(4);
     }
 
-    // Diagnostic : bouton copie puis panneau texte.
+    // Spectre
+    area.removeFromTop(kGap);
+    spectrumView_.setBounds(area.removeFromTop(kSpecH));
+
+    // Diagnostic
     area.removeFromTop(kGap);
     copyButton_.setBounds(area.removeFromTop(kCopyH).reduced(2));
     area.removeFromTop(kGap / 2);
@@ -474,7 +693,6 @@ void MainComponent::postCommand(EngineCommand::Action action, std::size_t track,
         anyTrackRecording_.store(false, std::memory_order_release);
     }
 
-    // Trace chaque clic : prouve que l'UI répond, même si l'audio est mort.
     juce::Logger::writeToLog(juce::String("Clic piste ") +
                              juce::String(static_cast<int>(track) + 1) + " : " +
                              actionName(action) + (accepted ? "" : "  (FILE PLEINE)"));

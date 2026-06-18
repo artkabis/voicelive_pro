@@ -15,9 +15,11 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include "voicelive/dsp/Equalizer.hpp"
+#include "voicelive/engine/LoopAudio.hpp"
 #include "voicelive/engine/LooperEngine.hpp"
 
 class MainComponent final : public juce::AudioAppComponent, private juce::Timer {
@@ -46,6 +48,26 @@ private:
         juce::TextButton clearButton;
         juce::Slider gainSlider;
         juce::ToggleButton muteButton;
+    };
+
+    /// Mini-waveform d'une piste enregistrée (lecture depuis LoopAudio).
+    struct TrackWaveform final : public juce::Component {
+        void setAudio(const voicelive::engine::LoopAudio* audio) noexcept;
+        void paint(juce::Graphics& g) override;
+
+    private:
+        const voicelive::engine::LoopAudio* audio_ = nullptr;
+    };
+
+    /// Spectre de fréquences temps-réel (FFT Cooley-Tukey 512 points).
+    struct SpectrumView final : public juce::Component {
+        static constexpr int kFftSize = 512;
+        void update(std::span<const float> analysis);
+        void paint(juce::Graphics& g) override;
+
+    private:
+        std::array<float, kFftSize / 2> smoothed_{};
+        bool hasData_ = false;
     };
 
     void setupTrackStrip(std::size_t index);
@@ -87,7 +109,9 @@ private:
 
     juce::Label titleLabel_;
     juce::Label tunerLabel_;
+    juce::ToggleButton tunerActiveButton_;
     std::array<TrackStrip, kTrackCount> strips_;
+    std::array<TrackWaveform, kTrackCount> waveforms_;
 
     juce::ToggleButton metronomeButton_;
     juce::Slider bpmSlider_;
@@ -99,6 +123,8 @@ private:
     juce::Slider lowEqSlider_;
     juce::Slider midEqSlider_;
     juce::Slider highEqSlider_;
+
+    SpectrumView spectrumView_;
 
     juce::TextEditor diagView_;    // panneau de diagnostic (observabilité mobile)
     juce::TextButton copyButton_;  // copie le diagnostic dans le presse-papier
