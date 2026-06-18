@@ -215,7 +215,7 @@ voicelive_pro/
 ├── .github/     # CI (cœur, desktop, Android)
 ├── scripts/     # check.sh (reproduit la CI en local)
 ├── VoiceLivePro.jucer  # projet Projucer (export Android)
-└── src/, gui_app.py…   # v1 Python (legacy, référence)
+└── old/               # v1 Python (legacy, préservée — non maintenue)
 ```
 
 ---
@@ -223,8 +223,8 @@ voicelive_pro/
 ## 🕰️ Historique — v1 (Python)
 
 La première version (looper 3 pistes, effets, métronome, accordeur, mastering)
-était écrite en **Python** (Flask/SocketIO + sounddevice). Elle reste dans le
-dépôt (`src/`, `gui_app.py`, `run_web.py`) comme **référence fonctionnelle**,
+était écrite en **Python** (Flask/SocketIO + sounddevice). Elle est conservée
+dans [`old/`](old/) comme **référence fonctionnelle** (non maintenue),
 mais n'est plus la cible de développement — la v2 C++ la remplace pour la
 latence, la qualité DSP et le support mobile. Le journal de la refonte est dans
 [`docs/DEVLOG.md`](docs/DEVLOG.md).
