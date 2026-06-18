@@ -66,16 +66,23 @@ jobs:
           "$PROJUCER" --set-global-search-path linux defaultJuceModulePath "$PWD/juce/modules"
           "$PROJUCER" --resave VoiceLivePro.jucer
 
-      - name: Vérifier le manifeste Android (permissions)
+      - name: Garantir la permission micro (RECORD_AUDIO)
+        # androidMicNeeded n'injecte pas la permission de façon fiable : on
+        # l'ajoute directement dans le manifeste généré (avant Gradle). Le build
+        # ÉCHOUE si la permission est absente → si vert, RECORD_AUDIO est présent.
         run: |
           MANIFEST="$(find Builds/Android -name AndroidManifest.xml | head -1)"
           echo "Manifeste : $MANIFEST"
+          if ! grep -qi "RECORD_AUDIO" "$MANIFEST"; then
+            sed -i '0,/<application/{s|<application|<uses-permission android:name="android.permission.RECORD_AUDIO"/>\n    <application|}' "$MANIFEST"
+            echo "RECORD_AUDIO injecté dans le manifeste"
+          fi
           echo "----- permissions déclarées -----"
-          grep -i "uses-permission" "$MANIFEST" || echo "AUCUNE permission déclarée !"
+          grep -i "uses-permission" "$MANIFEST"
           echo "---------------------------------"
           grep -qi "RECORD_AUDIO" "$MANIFEST" \
             && echo "OK : RECORD_AUDIO présent" \
-            || echo "ATTENTION : RECORD_AUDIO ABSENT du manifeste"
+            || { echo "ÉCHEC : RECORD_AUDIO absent"; exit 1; }
 
       - name: Installer le keystore debug stable
         # IMPORTANT : keystore committé (ci/debug.keystore) → tous les APK ont la
