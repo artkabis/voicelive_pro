@@ -66,7 +66,7 @@ juce::String MainComponent::AppLogger::snapshot() const {
 MainComponent::MainComponent() {
     // Capture tous les logs (les nôtres + JUCE) pour les rendre copiables.
     juce::Logger::setCurrentLogger(&appLogger_);
-    juce::Logger::writeToLog("VoiceLive Pro démarré");
+    juce::Logger::writeToLog("VoiceLive Pro demarre");
 
     // Viewport de défilement vertical : tout le contenu UI est dans contentPane_.
     viewport_.setScrollBarsShown(true, false);
@@ -75,8 +75,7 @@ MainComponent::MainComponent() {
 
     // Demande explicite de la permission micro (indispensable à l'entrée audio).
     juce::RuntimePermissions::request(juce::RuntimePermissions::recordAudio, [](bool granted) {
-        juce::Logger::writeToLog(granted ? "Permission micro : ACCORDÉE"
-                                         : "Permission micro : REFUSÉE");
+        juce::Logger::writeToLog(granted ? "Permission micro : OK" : "Permission micro : REFUSEE");
     });
 
     titleLabel_.setText("VoiceLive Pro", juce::dontSendNotification);
@@ -84,7 +83,7 @@ MainComponent::MainComponent() {
     titleLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(22.0F)));
     contentPane_.addAndMakeVisible(titleLabel_);
 
-    tunerLabel_.setText("Accordeur : —", juce::dontSendNotification);
+    tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
     tunerLabel_.setJustificationType(juce::Justification::centred);
     contentPane_.addAndMakeVisible(tunerLabel_);
 
@@ -93,7 +92,7 @@ MainComponent::MainComponent() {
     }
 
     // Transport : métronome + tempo.
-    metronomeButton_.setButtonText("Métronome");
+    metronomeButton_.setButtonText("Metronome");
     metronomeButton_.onClick = [this] {
         engine_.setMetronomeEnabled(metronomeButton_.getToggleState());
     };
@@ -107,7 +106,7 @@ MainComponent::MainComponent() {
     contentPane_.addAndMakeVisible(bpmSlider_);
 
     // Mastering : égaliseur 3 bandes inséré une fois dans le bus master.
-    masterLabel_.setText("Mastering — EQ 3 bandes", juce::dontSendNotification);
+    masterLabel_.setText("Mastering - EQ 3 bandes", juce::dontSendNotification);
     contentPane_.addAndMakeVisible(masterLabel_);
     {
         auto equalizer = std::make_unique<voicelive::dsp::Equalizer>();
@@ -133,10 +132,10 @@ MainComponent::MainComponent() {
         }
     };
 
-    midEqLabel_.setText("Médium", juce::dontSendNotification);
+    midEqLabel_.setText("Medium", juce::dontSendNotification);
     midEqLabel_.setJustificationType(juce::Justification::centredRight);
     contentPane_.addAndMakeVisible(midEqLabel_);
-    setupEq(midEqSlider_, "Médium");
+    setupEq(midEqSlider_, "Medium");
     midEqSlider_.onValueChange = [this] {
         if (masterEq_ != nullptr) {
             masterEq_->setMidGain(static_cast<float>(midEqSlider_.getValue()));
@@ -164,7 +163,7 @@ MainComponent::MainComponent() {
     copyButton_.setButtonText("Copier le diagnostic");
     copyButton_.onClick = [this] {
         juce::SystemClipboard::copyTextToClipboard(diagView_.getText());
-        juce::Logger::writeToLog("Diagnostic copié dans le presse-papier");
+        juce::Logger::writeToLog("Diagnostic copie dans le presse-papier");
     };
     contentPane_.addAndMakeVisible(copyButton_);
 
@@ -236,10 +235,10 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         if (const auto sr = SampleRate::create(rate); sr.ok()) {
             static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, blockSize));
             // Trace visible via `adb logcat` sur Android (sinon invisible sur mobile).
-            juce::Logger::writeToLog("VoiceLive: audio prêt " + juce::String(rate) + " Hz, bloc " +
+            juce::Logger::writeToLog("VoiceLive: audio pret " + juce::String(rate) + " Hz, bloc " +
                                      juce::String(static_cast<int>(blockSize)));
         } else {
-            juce::Logger::writeToLog("VoiceLive: ERREUR fréquence " + juce::String(rate));
+            juce::Logger::writeToLog("VoiceLive: ERREUR frequence " + juce::String(rate));
         }
         monoIn_.assign(blockSize, 0.0F);
         monoOut_.assign(blockSize, 0.0F);
@@ -295,7 +294,7 @@ void MainComponent::timerCallback() {
     }
     const auto note = engine_.tune(std::span<const float>{analysis_.data(), analysis_.size()});
     if (!note.has_value()) {
-        tunerLabel_.setText("Accordeur : —", juce::dontSendNotification);
+        tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
         return;
     }
     const int cents = juce::roundToInt(note->cents);
@@ -317,13 +316,13 @@ void MainComponent::updateDiagnostics() {
              << juce::String(device->getCurrentSampleRate(), 0) << " Hz / buffer "
              << device->getCurrentBufferSizeSamples() << "\n";
     } else {
-        text << "Audio : NON DÉMARRÉ (vérifier les permissions micro)\n";
+        text << "Audio : NON DEMARRE (verifier les permissions micro)\n";
     }
 
     const auto diag = engine_.diagnostics();
     text << "Moteur : " << static_cast<int>(diag.trackCount) << " pistes, "
          << static_cast<int>(diag.blocksProcessed) << " blocs, "
-         << static_cast<int>(diag.droppedCommands) << " cmd perdues, métronome "
+         << static_cast<int>(diag.droppedCommands) << " cmd perdues, metronome "
          << (diag.metronomeEnabled ? "ON" : "OFF") << ", master FX "
          << static_cast<int>(diag.masterEffectCount) << "\n";
 
@@ -339,7 +338,7 @@ void MainComponent::updateDiagnostics() {
              << "\n";
     }
 
-    text << "\n--- Journal (récent) ---\n" << appLogger_.snapshot();
+    text << "\n--- Journal (recent) ---\n" << appLogger_.snapshot();
     diagView_.setText(text, false);
 }
 
