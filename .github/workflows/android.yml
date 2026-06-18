@@ -10,7 +10,9 @@ name: Android APK
 on:
   workflow_dispatch:
   push:
-    branches: ["claude/audio-recording-app-feasibility-g7nde9"]
+    branches:
+      - "claude/audio-recording-app-feasibility-g7nde9"
+      - "claude/android-crashes-ui-fix-ycyyth"
     paths:
       - "app/**"
       - "core/**"

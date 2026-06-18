@@ -28,6 +28,7 @@ public:
     void getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) override;
     void releaseResources() override;
 
+    void paint(juce::Graphics& g) override;
     void resized() override;
 
 private:
@@ -74,15 +75,22 @@ private:
     std::vector<float> monoOut_;
     std::vector<float> analysis_;  // fenêtre glissante pour l'accordeur
 
+    // Conteneur de défilement — contentPane_ avant viewport_ pour que viewport_
+    // soit détruit en premier (évite use-after-free lors de la destruction).
+    juce::Component contentPane_;
+    juce::Viewport viewport_;
+
     juce::Label titleLabel_;
     juce::Label tunerLabel_;
     std::array<TrackStrip, kTrackCount> strips_;
 
-    juce::Label transportLabel_;
     juce::ToggleButton metronomeButton_;
     juce::Slider bpmSlider_;
 
     juce::Label masterLabel_;
+    juce::Label lowEqLabel_;
+    juce::Label midEqLabel_;
+    juce::Label highEqLabel_;
     juce::Slider lowEqSlider_;
     juce::Slider midEqSlider_;
     juce::Slider highEqSlider_;
