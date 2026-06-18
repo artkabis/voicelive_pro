@@ -7,15 +7,20 @@
 #include <cstddef>
 #include <memory>
 #include <span>
+#include <utility>
 
 #include "voicelive/core/AudioParams.hpp"
 #include "voicelive/core/LooperTrack.hpp"
 #include "voicelive/core/Music.hpp"
+#include "voicelive/core/ProjectSerializer.hpp"
 #include "voicelive/core/Transport.hpp"
 #include "voicelive/engine/ChannelUtils.hpp"
+#include "voicelive/engine/WavFile.hpp"
 
 namespace channels = voicelive::engine::channels;
 namespace music = voicelive::core::music;
+namespace project_io = voicelive::core::project_io;
+namespace wav = voicelive::engine::wav;
 using voicelive::core::Bpm;
 using voicelive::core::SampleRate;
 using voicelive::core::TrackState;
@@ -144,8 +149,51 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
         }
     }
 
+    // Surbrillance de la selection (zone orange semi-transparente)
+    if (selActive_ || std::abs(selEnd_ - selStart_) > 0.01F) {
+        const float x0 = std::min(selStart_, selEnd_) * static_cast<float>(w);
+        const float x1 = std::max(selStart_, selEnd_) * static_cast<float>(w);
+        g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.28F));
+        g.fillRect(x0, 0.0F, x1 - x0, static_cast<float>(h));
+        g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.85F));
+        g.drawVerticalLine(static_cast<int>(x0), 2.0F, static_cast<float>(h) - 2.0F);
+        g.drawVerticalLine(static_cast<int>(x1), 2.0F, static_cast<float>(h) - 2.0F);
+    }
+
     g.setColour(juce::Colours::grey.withAlpha(0.25F));
     g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+}
+
+void MainComponent::TrackWaveform::mouseDown(const juce::MouseEvent& e) {
+    selStart_ = juce::jlimit(0.0F, 1.0F, static_cast<float>(e.x) / static_cast<float>(getWidth()));
+    selEnd_ = selStart_;
+    selActive_ = false;
+    repaint();
+}
+
+void MainComponent::TrackWaveform::mouseDrag(const juce::MouseEvent& e) {
+    selEnd_ = juce::jlimit(0.0F, 1.0F, static_cast<float>(e.x) / static_cast<float>(getWidth()));
+    repaint();
+}
+
+void MainComponent::TrackWaveform::mouseUp(const juce::MouseEvent& /*e*/) {
+    selActive_ = std::abs(selEnd_ - selStart_) > 0.02F;
+    repaint();
+}
+
+bool MainComponent::TrackWaveform::hasSelection() const noexcept {
+    return selActive_ && std::abs(selEnd_ - selStart_) > 0.02F;
+}
+
+std::pair<float, float> MainComponent::TrackWaveform::selectionNormalized() const noexcept {
+    return {std::min(selStart_, selEnd_), std::max(selStart_, selEnd_)};
+}
+
+void MainComponent::TrackWaveform::clearSelection() noexcept {
+    selActive_ = false;
+    selStart_ = 0.0F;
+    selEnd_ = 0.0F;
+    repaint();
 }
 
 // ─── SpectrumView ─────────────────────────────────────────────────────────────
@@ -157,7 +205,6 @@ void MainComponent::SpectrumView::update(std::span<const float> analysis) {
     std::array<float, kFftSize / 2> mag;
     magnitudeSpectrum<kFftSize>(analysis.data() + analysis.size() - kFftSize, mag.data());
 
-    // Lissage exponentiel
     constexpr float kAlpha = 0.25F;
     for (int i = 0; i < kFftSize / 2; ++i) {
         smoothed_[static_cast<std::size_t>(i)] =
@@ -184,7 +231,6 @@ void MainComponent::SpectrumView::paint(juce::Graphics& g) {
 
     const int w = getWidth();
     const int h = getHeight();
-    // Affiche les 192 premieres bandes (0-18 kHz @ 48kHz) sur echelle log.
     constexpr int kBins = 192;
     const float barW = static_cast<float>(w) / static_cast<float>(kBins);
 
@@ -194,7 +240,6 @@ void MainComponent::SpectrumView::paint(juce::Graphics& g) {
         const float x = static_cast<float>(i) * barW;
         const float y = static_cast<float>(h) - barH - 1.0F;
 
-        // Degrade couleur : bleu (grave) -> cyan -> vert (aigu)
         const float t = static_cast<float>(i) / static_cast<float>(kBins);
         const juce::Colour col =
             juce::Colour(0xFF00D4FF).interpolatedWith(juce::Colour(0xFF00FF88), t);
@@ -229,7 +274,7 @@ void MainComponent::AppLogger::logMessage(const juce::String& message) {
             lines_.remove(0);
         }
     }
-    juce::Logger::outputDebugString(message);  // → logcat sur Android
+    juce::Logger::outputDebugString(message);
 }
 
 juce::String MainComponent::AppLogger::snapshot() const {
@@ -243,12 +288,10 @@ MainComponent::MainComponent() {
     juce::Logger::setCurrentLogger(&appLogger_);
     juce::Logger::writeToLog("VoiceLive Pro demarre");
 
-    // Viewport de défilement vertical : tout le contenu UI est dans contentPane_.
     viewport_.setScrollBarsShown(true, false);
     viewport_.setViewedComponent(&contentPane_, false);
     addAndMakeVisible(viewport_);
 
-    // Demande explicite de la permission micro (indispensable à l'entrée audio).
     juce::RuntimePermissions::request(juce::RuntimePermissions::recordAudio, [](bool granted) {
         juce::Logger::writeToLog(granted ? "Permission micro : OK" : "Permission micro : REFUSEE");
     });
@@ -258,7 +301,6 @@ MainComponent::MainComponent() {
     titleLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(22.0F)));
     contentPane_.addAndMakeVisible(titleLabel_);
 
-    // Accordeur + toggle ON/OFF
     tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
     tunerLabel_.setJustificationType(juce::Justification::centredLeft);
     contentPane_.addAndMakeVisible(tunerLabel_);
@@ -272,18 +314,31 @@ MainComponent::MainComponent() {
     };
     contentPane_.addAndMakeVisible(tunerActiveButton_);
 
-    // Pistes
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         setupTrackStrip(i);
         contentPane_.addAndMakeVisible(waveforms_[i]);
+        setupFxPanel(i);
+
+        cutBtns_[i].setButtonText("Cut Sel");
+        cutBtns_[i].onClick = [this, i] { cutSelection(i); };
+        contentPane_.addAndMakeVisible(cutBtns_[i]);
+
+        trimBtns_[i].setButtonText("Trim Sel");
+        trimBtns_[i].onClick = [this, i] { trimToSelection(i); };
+        contentPane_.addAndMakeVisible(trimBtns_[i]);
+
+        exportTrackBtns_[i].setButtonText("Export " + juce::String(static_cast<int>(i) + 1));
+        exportTrackBtns_[i].onClick = [this, i] { exportTrack(i); };
+        contentPane_.addAndMakeVisible(exportTrackBtns_[i]);
     }
 
-    // Transport : métronome + tempo.
+    // Transport
     metronomeButton_.setButtonText("Metronome");
     metronomeButton_.onClick = [this] {
         engine_.setMetronomeEnabled(metronomeButton_.getToggleState());
     };
     contentPane_.addAndMakeVisible(metronomeButton_);
+
     bpmSlider_.setRange(40.0, 240.0, 1.0);
     bpmSlider_.setValue(120.0, juce::dontSendNotification);
     bpmSlider_.setTextValueSuffix(" BPM");
@@ -292,27 +347,27 @@ MainComponent::MainComponent() {
     };
     contentPane_.addAndMakeVisible(bpmSlider_);
 
-    // Mastering : égaliseur 3 bandes inséré une fois dans le bus master.
-    masterLabel_.setText("Mastering - EQ 3 bandes", juce::dontSendNotification);
+    // EQ master
+    masterLabel_.setText("Mastering EQ 3 bandes", juce::dontSendNotification);
     contentPane_.addAndMakeVisible(masterLabel_);
     {
         auto equalizer = std::make_unique<voicelive::dsp::Equalizer>();
         masterEq_ = equalizer.get();
         engine_.masterEffects().add(std::move(equalizer));
     }
-    const auto setupEq = [this](juce::Slider& slider, const juce::String& name) {
+
+    const auto setupEqSlider = [this](juce::Slider& slider) {
         slider.setRange(-12.0, 12.0, 0.5);
         slider.setValue(0.0, juce::dontSendNotification);
         slider.setSliderStyle(juce::Slider::LinearHorizontal);
         slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 55, 20);
-        slider.setName(name);
         contentPane_.addAndMakeVisible(slider);
     };
 
     lowEqLabel_.setText("Grave", juce::dontSendNotification);
     lowEqLabel_.setJustificationType(juce::Justification::centredRight);
     contentPane_.addAndMakeVisible(lowEqLabel_);
-    setupEq(lowEqSlider_, "Grave");
+    setupEqSlider(lowEqSlider_);
     lowEqSlider_.onValueChange = [this] {
         if (masterEq_ != nullptr) {
             masterEq_->setLowGain(static_cast<float>(lowEqSlider_.getValue()));
@@ -322,7 +377,7 @@ MainComponent::MainComponent() {
     midEqLabel_.setText("Medium", juce::dontSendNotification);
     midEqLabel_.setJustificationType(juce::Justification::centredRight);
     contentPane_.addAndMakeVisible(midEqLabel_);
-    setupEq(midEqSlider_, "Medium");
+    setupEqSlider(midEqSlider_);
     midEqSlider_.onValueChange = [this] {
         if (masterEq_ != nullptr) {
             masterEq_->setMidGain(static_cast<float>(midEqSlider_.getValue()));
@@ -332,17 +387,34 @@ MainComponent::MainComponent() {
     highEqLabel_.setText("Aigu", juce::dontSendNotification);
     highEqLabel_.setJustificationType(juce::Justification::centredRight);
     contentPane_.addAndMakeVisible(highEqLabel_);
-    setupEq(highEqSlider_, "Aigu");
+    setupEqSlider(highEqSlider_);
     highEqSlider_.onValueChange = [this] {
         if (masterEq_ != nullptr) {
             masterEq_->setHighGain(static_cast<float>(highEqSlider_.getValue()));
         }
     };
 
-    // Spectre temps-réel
+    // Spectre
     contentPane_.addAndMakeVisible(spectrumView_);
 
-    // Panneau de diagnostic : rend l'app observable sur mobile (pas de console).
+    // I/O section
+    ioLabel_.setText("Export / Sauvegarde", juce::dontSendNotification);
+    ioLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
+    contentPane_.addAndMakeVisible(ioLabel_);
+
+    exportMixBtn_.setButtonText("Export Mix WAV");
+    exportMixBtn_.onClick = [this] { exportMix(); };
+    contentPane_.addAndMakeVisible(exportMixBtn_);
+
+    saveProjectBtn_.setButtonText("Sauvegarder");
+    saveProjectBtn_.onClick = [this] { saveProject(); };
+    contentPane_.addAndMakeVisible(saveProjectBtn_);
+
+    loadProjectBtn_.setButtonText("Charger");
+    loadProjectBtn_.onClick = [this] { loadProject(); };
+    contentPane_.addAndMakeVisible(loadProjectBtn_);
+
+    // Diagnostic
     diagView_.setMultiLine(true);
     diagView_.setReadOnly(true);
     diagView_.setCaretVisible(false);
@@ -358,7 +430,7 @@ MainComponent::MainComponent() {
     contentPane_.addAndMakeVisible(copyButton_);
 
     analysis_.assign(kAnalysisSize, 0.0F);
-    setSize(400, 700);
+    setSize(400, 800);
     setAudioChannels(2, 2);
     startTimerHz(10);
 }
@@ -368,6 +440,8 @@ MainComponent::~MainComponent() {
     shutdownAudio();
     juce::Logger::setCurrentLogger(nullptr);
 }
+
+// ─── Setup helpers ────────────────────────────────────────────────────────────
 
 void MainComponent::setupTrackStrip(std::size_t index) {
     TrackStrip& strip = strips_[index];
@@ -415,6 +489,144 @@ void MainComponent::setupTrackStrip(std::size_t index) {
     contentPane_.addAndMakeVisible(strip.muteButton);
 }
 
+void MainComponent::setupFxPanel(std::size_t index) {
+    auto& fx = fxPanels_[index];
+
+    // Helper : configure un slider de parametre d'effet (compact, pas de textbox)
+    const auto makeParamSlider = [this](juce::Slider& s, double lo, double hi, double init) {
+        s.setRange(lo, hi, 0.0);
+        s.setValue(init, juce::dontSendNotification);
+        s.setSliderStyle(juce::Slider::LinearHorizontal);
+        s.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        contentPane_.addAndMakeVisible(s);
+    };
+
+    // Reverb
+    fx.reverbBtn.setButtonText("REV");
+    fx.reverbBtn.setClickingTogglesState(true);
+    fx.reverbBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.reverb)
+            return;
+        const bool on = f.reverbBtn.getToggleState();
+        f.reverb->setWet(on ? static_cast<float>(f.reverbWetSlider.getValue()) : 0.0F);
+        f.reverb->setDry(on ? 0.7F : 1.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.reverbBtn);
+
+    makeParamSlider(fx.reverbWetSlider, 0.0, 1.0, 0.35);
+    fx.reverbWetSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.reverb && f.reverbBtn.getToggleState()) {
+            f.reverb->setWet(static_cast<float>(f.reverbWetSlider.getValue()));
+        }
+    };
+
+    // Delay
+    fx.delayBtn.setButtonText("DLY");
+    fx.delayBtn.setClickingTogglesState(true);
+    fx.delayBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.delay)
+            return;
+        f.delay->setMix(f.delayBtn.getToggleState() ? 0.45F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.delayBtn);
+
+    makeParamSlider(fx.delayTimeSlider, 0.05, 1.0, 0.25);
+    fx.delayTimeSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.delay) {
+            f.delay->setDelaySeconds(static_cast<float>(f.delayTimeSlider.getValue()));
+        }
+    };
+
+    // Wah
+    fx.wahBtn.setButtonText("WAH");
+    fx.wahBtn.setClickingTogglesState(true);
+    fx.wahBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.wah)
+            return;
+        f.wah->setMix(f.wahBtn.getToggleState() ? 1.0F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.wahBtn);
+
+    makeParamSlider(fx.wahRateSlider, 0.1, 5.0, 1.5);
+    fx.wahRateSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.wah) {
+            f.wah->setRate(static_cast<float>(f.wahRateSlider.getValue()));
+        }
+    };
+
+    // Chorus
+    fx.chorusBtn.setButtonText("CHR");
+    fx.chorusBtn.setClickingTogglesState(true);
+    fx.chorusBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.chorus)
+            return;
+        f.chorus->setMix(f.chorusBtn.getToggleState()
+                             ? static_cast<float>(f.chorusDepthSlider.getValue())
+                             : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.chorusBtn);
+
+    makeParamSlider(fx.chorusDepthSlider, 0.0, 1.0, 0.5);
+    fx.chorusDepthSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.chorus && f.chorusBtn.getToggleState()) {
+            f.chorus->setMix(static_cast<float>(f.chorusDepthSlider.getValue()));
+        }
+    };
+}
+
+void MainComponent::setupEffects() {
+    if (effectsSetup_)
+        return;
+    effectsSetup_ = true;
+
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        auto* chain = engine_.effectsForTrack(i);
+        if (!chain)
+            continue;
+
+        auto reverb = std::make_unique<voicelive::dsp::Reverb>();
+        reverb->setWet(0.0F);
+        reverb->setDry(1.0F);
+        reverb->setRoomSize(0.7F);
+        reverb->setDamping(0.5F);
+        fxPanels_[i].reverb = reverb.get();
+        chain->add(std::move(reverb));
+
+        auto delay = std::make_unique<voicelive::dsp::Delay>();
+        delay->setMix(0.0F);
+        delay->setDelaySeconds(0.25F);
+        delay->setFeedback(0.4F);
+        fxPanels_[i].delay = delay.get();
+        chain->add(std::move(delay));
+
+        auto wah = std::make_unique<voicelive::dsp::Wah>();
+        wah->setMix(0.0F);
+        wah->setRate(1.5F);
+        wah->setMinFrequency(400.0F);
+        wah->setMaxFrequency(2000.0F);
+        wah->setResonance(4.0F);
+        fxPanels_[i].wah = wah.get();
+        chain->add(std::move(wah));
+
+        auto chorus = std::make_unique<voicelive::dsp::Chorus>();
+        chorus->setMix(0.0F);
+        chorus->setRate(1.5F);
+        chorus->setDepth(0.5F);
+        fxPanels_[i].chorus = chorus.get();
+        chain->add(std::move(chorus));
+    }
+}
+
+// ─── Audio ────────────────────────────────────────────────────────────────────
+
 void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
     try {
         const auto blockSize = static_cast<std::size_t>(juce::jmax(1, samplesPerBlockExpected));
@@ -423,6 +635,8 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
 
         if (const auto sr = SampleRate::create(rate); sr.ok()) {
             static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, blockSize));
+            sampleRate_ = sampleRate;
+            setupEffects();
             juce::Logger::writeToLog("VoiceLive: audio pret " + juce::String(rate) + " Hz, bloc " +
                                      juce::String(static_cast<int>(blockSize)));
         } else {
@@ -461,7 +675,7 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     const std::span<float> monoOut{monoOut_.data(), numSamples};
     channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
 
-    // Alimente la fenêtre d'analyse pour l'accordeur et le spectre (course bénigne avec Timer).
+    // Alimente la fenetre d'analyse pour l'accordeur et le spectre.
     if (numSamples < analysis_.size()) {
         const std::size_t keep = analysis_.size() - numSamples;
         std::copy(analysis_.begin() + static_cast<std::ptrdiff_t>(numSamples), analysis_.end(),
@@ -472,7 +686,7 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
 
     engine_.process(monoOut, monoIn);
 
-    // Couper la sortie haut-parleur pendant l'enregistrement pour éviter le larsen.
+    // Couper le haut-parleur pendant l'enregistrement pour eviter le larsen.
     if (anyTrackRecording_.load(std::memory_order_acquire)) {
         std::fill(monoOut.begin(), monoOut.end(), 0.0F);
     }
@@ -482,12 +696,14 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
 
 void MainComponent::releaseResources() {}
 
-void MainComponent::timerCallback() {
-    if (analysis_.empty()) {
-        return;
-    }
+// ─── Timer ────────────────────────────────────────────────────────────────────
 
-    // Accordeur (seulement si activé)
+void MainComponent::timerCallback() {
+    if (analysis_.empty())
+        return;
+
+    checkPendingEdit();
+
     if (tunerActiveButton_.getToggleState()) {
         const auto note = engine_.tune(std::span<const float>{analysis_.data(), analysis_.size()});
         if (!note.has_value()) {
@@ -501,10 +717,8 @@ void MainComponent::timerCallback() {
         }
     }
 
-    // Spectre temps-réel
     spectrumView_.update(std::span<const float>{analysis_.data(), analysis_.size()});
 
-    // Waveforms des pistes
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         if (const auto* proc = engine_.track(i); proc != nullptr) {
             waveforms_[i].setAudio(&proc->audio());
@@ -523,6 +737,10 @@ void MainComponent::updateDiagnostics() {
     if (anyTrackRecording_.load(std::memory_order_relaxed)) {
         text << "[REC EN COURS] Speaker coupe - utiliser des ecouteurs pour le retour\n";
     }
+    if (pendingEdit_) {
+        text << "[EDIT EN ATTENTE] piste " << static_cast<int>(pendingEdit_->trackIndex + 1)
+             << "\n";
+    }
 
     if (auto* device = deviceManager.getCurrentAudioDevice(); device != nullptr) {
         text << "Audio : " << device->getName() << "  "
@@ -539,11 +757,13 @@ void MainComponent::updateDiagnostics() {
          << (diag.metronomeEnabled ? "ON" : "OFF") << ", master FX "
          << static_cast<int>(diag.masterEffectCount) << "\n";
 
+    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    text << "Dossier exports : " << dir.getFullPathName() << "\n";
+
     for (std::size_t i = 0; i < diag.trackCount; ++i) {
         const auto* processor = engine_.track(i);
-        if (processor == nullptr) {
+        if (processor == nullptr)
             continue;
-        }
         const auto& track = processor->track();
         text << "  Piste " << static_cast<int>(i) + 1 << " : "
              << voicelive::core::toString(track.state()) << "  gain "
@@ -559,6 +779,8 @@ void MainComponent::paint(juce::Graphics& g) {
     g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
 }
 
+// ─── Layout ───────────────────────────────────────────────────────────────────
+
 void MainComponent::resized() {
     viewport_.setBounds(getLocalBounds());
 
@@ -566,28 +788,33 @@ void MainComponent::resized() {
     const int pad = 12;
 
     constexpr int kTitleH = 34;
-    constexpr int kTunerH = 34;  // ligne accordeur (toggle + label)
+    constexpr int kTunerH = 34;
     constexpr int kRowH = 44;
-    constexpr int kTrackCtrlH = kRowH * 2 + 6;  // 2 rangees de controles
-    constexpr int kWaveH = 52;                  // waveform par piste
-    constexpr int kTrackH = kTrackCtrlH + kWaveH + 4;
+    constexpr int kWaveH = 60;
+    constexpr int kFxRowH = 40;
+    constexpr int kEditRowH = 36;
     constexpr int kTransH = 48;
     constexpr int kEqLblH = 26;
     constexpr int kEqRowH = 44;
-    constexpr int kSpecH = 90;  // vue spectre
+    constexpr int kSpecH = 90;
+    constexpr int kIoLblH = 26;
+    constexpr int kIoRowH = 44;
     constexpr int kCopyH = 40;
     constexpr int kDiagH = 200;
     constexpr int kGap = 10;
 
+    // Hauteur d'un bloc piste : 2 rangees de controles + waveform + 2 rangees FX + rangee edition
+    constexpr int kTrackH = kRowH + 6 + kRowH + 4 + kWaveH + 4 + kFxRowH + kFxRowH + kEditRowH;
+
     const int trackCount = static_cast<int>(kTrackCount);
     const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap +
                        trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
-                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kCopyH + kGap / 2 + kDiagH + pad;
+                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kIoLblH + 4 + kIoRowH + 4 +
+                       kIoRowH + kGap + kCopyH + kGap / 2 + kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
 
-    // Titre
     titleLabel_.setBounds(area.removeFromTop(kTitleH));
     area.removeFromTop(kGap / 2);
 
@@ -602,30 +829,64 @@ void MainComponent::resized() {
     // Pistes
     const int w = area.getWidth();
     for (std::size_t i = 0; i < kTrackCount; ++i) {
-        TrackStrip& strip = strips_[i];
         auto trackArea = area.removeFromTop(kTrackH);
 
-        // Rangee 1 : label + boutons
+        // Rangee 1 : label + boutons transport
         auto row1 = trackArea.removeFromTop(kRowH);
         const int labelW = 56;
         const int btnW = juce::jmax(42, (w - labelW) / 4);
-        strip.label.setBounds(row1.removeFromLeft(labelW));
-        strip.recordButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
-        strip.playButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
-        strip.stopButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
-        strip.clearButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
+        strips_[i].label.setBounds(row1.removeFromLeft(labelW));
+        strips_[i].recordButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
+        strips_[i].playButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
+        strips_[i].stopButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
+        strips_[i].clearButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
 
         trackArea.removeFromTop(6);
 
         // Rangee 2 : gain + mute
         auto row2 = trackArea.removeFromTop(kRowH);
-        strip.muteButton.setBounds(row2.removeFromRight(64).reduced(2));
-        strip.gainSlider.setBounds(row2.reduced(2));
+        strips_[i].muteButton.setBounds(row2.removeFromRight(64).reduced(2));
+        strips_[i].gainSlider.setBounds(row2.reduced(2));
 
         trackArea.removeFromTop(4);
 
-        // Waveform
+        // Waveform (avec selection interactive)
         waveforms_[i].setBounds(trackArea.removeFromTop(kWaveH));
+
+        trackArea.removeFromTop(4);
+
+        // FX Rangee 1 : [REV | wet] | [DLY | time]
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].reverbBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].reverbWetSlider.setBounds(left.reduced(2));
+            fxPanels_[i].delayBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].delayTimeSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // FX Rangee 2 : [WAH | rate] | [CHR | depth]
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].wahBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].wahRateSlider.setBounds(left.reduced(2));
+            fxPanels_[i].chorusBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].chorusDepthSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // Rangee edition : [Cut Sel] [Trim Sel] [Export N]
+        {
+            auto editRow = trackArea.removeFromTop(kEditRowH);
+            const int third = editRow.getWidth() / 3;
+            cutBtns_[i].setBounds(editRow.removeFromLeft(third).reduced(2));
+            trimBtns_[i].setBounds(editRow.removeFromLeft(third).reduced(2));
+            exportTrackBtns_[i].setBounds(editRow.reduced(2));
+        }
 
         area.removeFromTop(kGap / 2);
     }
@@ -638,11 +899,10 @@ void MainComponent::resized() {
         bpmSlider_.setBounds(row.reduced(4));
     }
 
-    // EQ
+    // EQ master
     area.removeFromTop(kGap);
     masterLabel_.setBounds(area.removeFromTop(kEqLblH));
     area.removeFromTop(4);
-
     const int eqLabelW = 68;
     const std::pair<juce::Slider*, juce::Label*> eqRows[3] = {
         {&lowEqSlider_, &lowEqLabel_},
@@ -656,9 +916,21 @@ void MainComponent::resized() {
         area.removeFromTop(4);
     }
 
-    // Spectre
+    // Spectre temps-reel
     area.removeFromTop(kGap);
     spectrumView_.setBounds(area.removeFromTop(kSpecH));
+
+    // I/O section
+    area.removeFromTop(kGap);
+    ioLabel_.setBounds(area.removeFromTop(kIoLblH));
+    area.removeFromTop(4);
+    exportMixBtn_.setBounds(area.removeFromTop(kIoRowH).reduced(2));
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kIoRowH);
+        saveProjectBtn_.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(2));
+        loadProjectBtn_.setBounds(row.reduced(2));
+    }
 
     // Diagnostic
     area.removeFromTop(kGap);
@@ -666,6 +938,8 @@ void MainComponent::resized() {
     area.removeFromTop(kGap / 2);
     diagView_.setBounds(area.removeFromTop(kDiagH));
 }
+
+// ─── Controle des pistes ──────────────────────────────────────────────────────
 
 void MainComponent::recordOrFinish(std::size_t index) {
     const auto* processor = engine_.track(index);
@@ -687,8 +961,6 @@ void MainComponent::postCommand(EngineCommand::Action action, std::size_t track,
     command.muted = muted;
     const bool accepted = engine_.post(command);
 
-    // Si la piste est effacée ou stoppée, on annule le flag d'enregistrement
-    // (cas : Clear/Stop pendant un enregistrement actif).
     if (action == EngineCommand::Action::Clear || action == EngineCommand::Action::Stop) {
         anyTrackRecording_.store(false, std::memory_order_release);
     }
@@ -696,4 +968,229 @@ void MainComponent::postCommand(EngineCommand::Action action, std::size_t track,
     juce::Logger::writeToLog(juce::String("Clic piste ") +
                              juce::String(static_cast<int>(track) + 1) + " : " +
                              actionName(action) + (accepted ? "" : "  (FILE PLEINE)"));
+}
+
+// ─── Edition de piste ─────────────────────────────────────────────────────────
+
+void MainComponent::cutSelection(std::size_t index) {
+    auto& wf = waveforms_[index];
+    if (!wf.hasSelection()) {
+        juce::Logger::writeToLog("Cut : pas de selection sur piste " +
+                                 juce::String(static_cast<int>(index) + 1));
+        return;
+    }
+    if (pendingEdit_) {
+        juce::Logger::writeToLog("Edit deja en attente, annule");
+        return;
+    }
+
+    const auto* proc = engine_.track(index);
+    if (!proc)
+        return;
+    const auto& audio = proc->audio();
+    const std::size_t len = audio.loopLength();
+    if (len == 0)
+        return;
+
+    auto [n0, n1] = wf.selectionNormalized();
+    const std::size_t s0 = static_cast<std::size_t>(n0 * static_cast<float>(len));
+    const std::size_t s1 = static_cast<std::size_t>(n1 * static_cast<float>(len));
+
+    std::vector<float> edited;
+    edited.reserve(len - (s1 - s0));
+    for (std::size_t s = 0; s < s0; ++s)
+        edited.push_back(audio.sampleAt(s));
+    for (std::size_t s = s1; s < len; ++s)
+        edited.push_back(audio.sampleAt(s));
+
+    postCommand(EngineCommand::Action::Stop, index, 1.0F, false);
+    pendingEdit_ = PendingEdit{index, std::move(edited)};
+    wf.clearSelection();
+    juce::Logger::writeToLog("Cut programme sur piste " +
+                             juce::String(static_cast<int>(index) + 1));
+}
+
+void MainComponent::trimToSelection(std::size_t index) {
+    auto& wf = waveforms_[index];
+    if (!wf.hasSelection()) {
+        juce::Logger::writeToLog("Trim : pas de selection sur piste " +
+                                 juce::String(static_cast<int>(index) + 1));
+        return;
+    }
+    if (pendingEdit_) {
+        juce::Logger::writeToLog("Edit deja en attente, annule");
+        return;
+    }
+
+    const auto* proc = engine_.track(index);
+    if (!proc)
+        return;
+    const auto& audio = proc->audio();
+    const std::size_t len = audio.loopLength();
+    if (len == 0)
+        return;
+
+    auto [n0, n1] = wf.selectionNormalized();
+    const std::size_t s0 = static_cast<std::size_t>(n0 * static_cast<float>(len));
+    const std::size_t s1 = static_cast<std::size_t>(n1 * static_cast<float>(len));
+
+    std::vector<float> edited;
+    edited.reserve(s1 - s0);
+    for (std::size_t s = s0; s < s1; ++s)
+        edited.push_back(audio.sampleAt(s));
+
+    postCommand(EngineCommand::Action::Stop, index, 1.0F, false);
+    pendingEdit_ = PendingEdit{index, std::move(edited)};
+    wf.clearSelection();
+    juce::Logger::writeToLog("Trim programme sur piste " +
+                             juce::String(static_cast<int>(index) + 1));
+}
+
+void MainComponent::checkPendingEdit() {
+    if (!pendingEdit_)
+        return;
+
+    const auto& edit = *pendingEdit_;
+    const auto* proc = engine_.track(edit.trackIndex);
+    if (!proc) {
+        pendingEdit_.reset();
+        return;
+    }
+
+    const auto state = proc->track().state();
+    if (state != TrackState::Stopped && state != TrackState::Empty)
+        return;
+
+    // La piste est arretee : process() n'accede plus a audio_, on peut editer.
+    applyTrackEdit(edit.trackIndex, std::move(pendingEdit_->newSamples));
+    pendingEdit_.reset();
+}
+
+void MainComponent::applyTrackEdit(std::size_t index, std::vector<float> newSamples) {
+    wav::AudioData data;
+    data.samples = std::move(newSamples);
+    data.sampleRate = static_cast<unsigned>(sampleRate_);
+    data.channels = 1;
+
+    const auto status = engine_.importTrack(index, data);
+    if (!status.ok()) {
+        juce::Logger::writeToLog("Edit echoue piste " + juce::String(static_cast<int>(index) + 1));
+    } else {
+        postCommand(EngineCommand::Action::Play, index, 1.0F, false);
+        juce::Logger::writeToLog("Edit applique piste " +
+                                 juce::String(static_cast<int>(index) + 1) + " (" +
+                                 juce::String(static_cast<int>(data.samples.size())) + " samples)");
+    }
+}
+
+// ─── Export / Sauvegarde ──────────────────────────────────────────────────────
+
+void MainComponent::exportMix() {
+    const std::size_t len = engine_.masterLoopLength();
+    if (len == 0) {
+        juce::Logger::writeToLog("Export mix : rien a exporter (enregistrez une piste d'abord)");
+        return;
+    }
+
+    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    dir.createDirectory();
+    const juce::String filename =
+        "mix_" + juce::String(juce::Time::getCurrentTime().toMilliseconds()) + ".wav";
+    const std::string path = dir.getChildFile(filename).getFullPathName().toStdString();
+
+    const auto status = engine_.exportMixToFile(path, len);
+    if (!status.ok()) {
+        juce::Logger::writeToLog("Export mix echoue");
+    } else {
+        juce::Logger::writeToLog("Mix exporte : " + juce::String(path.c_str()));
+    }
+}
+
+void MainComponent::exportTrack(std::size_t index) {
+    const auto* proc = engine_.track(index);
+    if (!proc)
+        return;
+    const auto& audio = proc->audio();
+    const std::size_t len = audio.loopLength();
+    if (len == 0) {
+        juce::Logger::writeToLog("Export piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " : vide");
+        return;
+    }
+
+    wav::AudioData data;
+    data.sampleRate = static_cast<unsigned>(sampleRate_);
+    data.channels = 1;
+    data.samples.resize(len);
+    for (std::size_t s = 0; s < len; ++s) {
+        data.samples[s] = audio.sampleAt(s);
+    }
+
+    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    dir.createDirectory();
+    const juce::String filename = "track" + juce::String(static_cast<int>(index) + 1) + "_" +
+                                  juce::String(juce::Time::getCurrentTime().toMilliseconds()) +
+                                  ".wav";
+    const std::string path = dir.getChildFile(filename).getFullPathName().toStdString();
+
+    const auto status = wav::write(path, data);
+    if (!status.ok()) {
+        juce::Logger::writeToLog("Export piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " echoue");
+    } else {
+        juce::Logger::writeToLog("Piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " exportee : " + juce::String(path.c_str()));
+    }
+}
+
+void MainComponent::saveProject() {
+    auto result = engine_.exportSettings();
+    if (!result.ok()) {
+        juce::Logger::writeToLog("Sauvegarde : echec lecture parametres moteur");
+        return;
+    }
+
+    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    dir.createDirectory();
+    const std::string path =
+        dir.getChildFile("voicelive_project.vlp").getFullPathName().toStdString();
+
+    const auto status = project_io::saveToFile(path, result.value());
+    if (!status.ok()) {
+        juce::Logger::writeToLog("Sauvegarde echouee");
+    } else {
+        juce::Logger::writeToLog("Projet sauvegarde : " + juce::String(path.c_str()));
+    }
+}
+
+void MainComponent::loadProject() {
+    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    const std::string path =
+        dir.getChildFile("voicelive_project.vlp").getFullPathName().toStdString();
+
+    auto result = project_io::loadFromFile(path);
+    if (!result.ok()) {
+        juce::Logger::writeToLog("Chargement echoue (fichier absent ou invalide) : " +
+                                 juce::String(path.c_str()));
+        return;
+    }
+
+    const auto status = engine_.applySettings(result.value());
+    if (!status.ok()) {
+        juce::Logger::writeToLog("Application des parametres echouee");
+        return;
+    }
+
+    // Synchroniser les sliders UI avec les valeurs chargees.
+    auto& project = result.value();
+    bpmSlider_.setValue(project.transport().bpm().value(), juce::sendNotificationSync);
+    for (std::size_t i = 0; i < kTrackCount && i < project.trackCount(); ++i) {
+        if (auto* t = project.track(i)) {
+            strips_[i].gainSlider.setValue(
+                juce::jlimit(0.0, 2.0, static_cast<double>(t->gain().linear())),
+                juce::sendNotificationSync);
+            strips_[i].muteButton.setToggleState(t->isMuted(), juce::sendNotificationSync);
+        }
+    }
+    juce::Logger::writeToLog("Projet charge depuis : " + juce::String(path.c_str()));
 }

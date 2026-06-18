@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: MIT
 //
-// MainComponent — pont JUCE ↔ moteur + UI multipiste.
+// MainComponent -- pont JUCE <-> moteur + UI multipiste.
 //
 // Le composant est la source audio (AudioAppComponent) et l'interface. Les
 // actions de piste (record/play/stop/clear/gain/mute) passent par la file
-// lock-free du moteur (appliquées sur le thread audio). Les réglages continus
-// (BPM, métronome, égaliseur de mastering) sont écrits directement : course
-// bénigne sur des scalaires, sans réallocation. L'accordeur est rafraîchi par
-// un Timer qui lit une fenêtre d'analyse alimentée par le callback audio.
+// lock-free du moteur (appliquees sur le thread audio). Les reglages continus
+// (BPM, metronome, EQ master, effets de piste) sont ecrits directement : course
+// benigne sur des scalaires, sans reallocation.
+//
+// Fonctionnalites :
+//   - Effets par piste : Reverb / Delay / Wah / Chorus (toggle + parametre)
+//   - Selection sur la forme d'onde : toucher/glisser pour definir une region
+//   - Edition : couper la selection, garder la selection (trim)
+//   - Export : mix complet WAV, piste individuelle WAV
+//   - Sauvegarde / chargement des reglages (ProjectSerializer)
 #pragma once
 
 #include <juce_audio_utils/juce_audio_utils.h>
@@ -15,10 +21,15 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <optional>
 #include <span>
 #include <vector>
 
+#include "voicelive/dsp/Chorus.hpp"
+#include "voicelive/dsp/Delay.hpp"
 #include "voicelive/dsp/Equalizer.hpp"
+#include "voicelive/dsp/Reverb.hpp"
+#include "voicelive/dsp/Wah.hpp"
 #include "voicelive/engine/LoopAudio.hpp"
 #include "voicelive/engine/LooperEngine.hpp"
 
@@ -39,7 +50,7 @@ private:
     static constexpr int kMaxChannels = 8;
     static constexpr std::size_t kAnalysisSize = 4096;
 
-    /// Contrôles d'une piste.
+    /// Controles d'une piste.
     struct TrackStrip {
         juce::Label label;
         juce::TextButton recordButton;
@@ -50,16 +61,25 @@ private:
         juce::ToggleButton muteButton;
     };
 
-    /// Mini-waveform d'une piste enregistrée (lecture depuis LoopAudio).
+    /// Mini-waveform d'une piste avec selection interactive (toucher/glisser).
     struct TrackWaveform final : public juce::Component {
         void setAudio(const voicelive::engine::LoopAudio* audio) noexcept;
         void paint(juce::Graphics& g) override;
+        void mouseDown(const juce::MouseEvent& e) override;
+        void mouseUp(const juce::MouseEvent& e) override;
+        void mouseDrag(const juce::MouseEvent& e) override;
+        [[nodiscard]] bool hasSelection() const noexcept;
+        [[nodiscard]] std::pair<float, float> selectionNormalized() const noexcept;
+        void clearSelection() noexcept;
 
     private:
         const voicelive::engine::LoopAudio* audio_ = nullptr;
+        float selStart_ = 0.0F;
+        float selEnd_ = 0.0F;
+        bool selActive_ = false;
     };
 
-    /// Spectre de fréquences temps-réel (FFT Cooley-Tukey 512 points).
+    /// Spectre de frequences temps-reel (FFT Cooley-Tukey 512 points).
     struct SpectrumView final : public juce::Component {
         static constexpr int kFftSize = 512;
         void update(std::span<const float> analysis);
@@ -70,15 +90,42 @@ private:
         bool hasData_ = false;
     };
 
+    /// Panneau d'effets par piste : un toggle + un parametre par effet.
+    /// Les pointeurs raw sont possedes par l'EffectChain correspondante.
+    struct TrackFxPanel {
+        juce::TextButton reverbBtn, delayBtn, wahBtn, chorusBtn;
+        juce::Slider reverbWetSlider;    ///< wet level  [0, 1]
+        juce::Slider delayTimeSlider;    ///< delay time [0.05, 1.0] s
+        juce::Slider wahRateSlider;      ///< LFO rate   [0.1, 5.0] Hz
+        juce::Slider chorusDepthSlider;  ///< modulation depth [0, 1]
+        voicelive::dsp::Reverb* reverb = nullptr;
+        voicelive::dsp::Delay* delay = nullptr;
+        voicelive::dsp::Wah* wah = nullptr;
+        voicelive::dsp::Chorus* chorus = nullptr;
+    };
+
     void setupTrackStrip(std::size_t index);
+    void setupFxPanel(std::size_t index);
+    void setupEffects();
     void recordOrFinish(std::size_t index);
     void postCommand(voicelive::engine::EngineCommand::Action action, std::size_t track, float gain,
                      bool muted);
     void timerCallback() override;
     void updateDiagnostics();
 
-    /// Journal thread-safe : capture tous les messages JUCE (et les nôtres) pour
-    /// les afficher dans l'app et les copier (récupérables sans console).
+    // --- Edition de piste ----------------------------------------------------
+    void cutSelection(std::size_t index);
+    void trimToSelection(std::size_t index);
+    void applyTrackEdit(std::size_t index, std::vector<float> newSamples);
+    void checkPendingEdit();
+
+    // --- Export / Sauvegarde -------------------------------------------------
+    void exportMix();
+    void exportTrack(std::size_t index);
+    void saveProject();
+    void loadProject();
+
+    /// Journal thread-safe : capture tous les messages JUCE pour l'app mobile.
     class AppLogger final : public juce::Logger {
     public:
         void logMessage(const juce::String& message) override;
@@ -92,26 +139,40 @@ private:
     AppLogger appLogger_;
 
     voicelive::engine::LooperEngine engine_;
-    voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possédé par la chaîne de mastering
+    voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possede par masterChain_
 
     std::vector<float> monoIn_;
     std::vector<float> monoOut_;
-    std::vector<float> analysis_;  // fenêtre glissante pour l'accordeur
+    std::vector<float> analysis_;
 
-    // Vrai quand au moins une piste est en cours d'enregistrement.
-    // Lu par le thread audio pour couper le haut-parleur (anti-larsen).
     std::atomic<bool> anyTrackRecording_{false};
 
-    // Conteneur de défilement — contentPane_ avant viewport_ pour que viewport_
-    // soit détruit en premier (évite use-after-free lors de la destruction).
+    double sampleRate_ = 48000.0;
+    bool effectsSetup_ = false;
+
+    /// Edition en attente : appliquee des que la piste atteint Stopped/Empty.
+    struct PendingEdit {
+        std::size_t trackIndex = 0;
+        std::vector<float> newSamples;
+    };
+    std::optional<PendingEdit> pendingEdit_;
+
+    // Conteneur de defilement -- contentPane_ avant viewport_ pour que viewport_
+    // soit detruit en premier (evite use-after-free lors de la destruction).
     juce::Component contentPane_;
     juce::Viewport viewport_;
 
     juce::Label titleLabel_;
     juce::Label tunerLabel_;
     juce::ToggleButton tunerActiveButton_;
+
     std::array<TrackStrip, kTrackCount> strips_;
     std::array<TrackWaveform, kTrackCount> waveforms_;
+    std::array<TrackFxPanel, kTrackCount> fxPanels_;
+
+    std::array<juce::TextButton, kTrackCount> cutBtns_;
+    std::array<juce::TextButton, kTrackCount> trimBtns_;
+    std::array<juce::TextButton, kTrackCount> exportTrackBtns_;
 
     juce::ToggleButton metronomeButton_;
     juce::Slider bpmSlider_;
@@ -126,8 +187,13 @@ private:
 
     SpectrumView spectrumView_;
 
-    juce::TextEditor diagView_;    // panneau de diagnostic (observabilité mobile)
-    juce::TextButton copyButton_;  // copie le diagnostic dans le presse-papier
+    juce::Label ioLabel_;
+    juce::TextButton exportMixBtn_;
+    juce::TextButton saveProjectBtn_;
+    juce::TextButton loadProjectBtn_;
+
+    juce::TextEditor diagView_;
+    juce::TextButton copyButton_;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
