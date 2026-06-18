@@ -73,4 +73,4 @@ jobs:
       - name: clang-tidy
         run: |
           find core dsp engine -name '*.cpp' \
-            | xargs -I{} clang-tidy-18 -p build {}
+            | xargs -I{} clang-tidy-18 --quiet -p build {}
