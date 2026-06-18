@@ -77,6 +77,10 @@ private:
         float selStart_ = 0.0F;
         float selEnd_ = 0.0F;
         bool selActive_ = false;
+        // Peak cache: rebuilt only when loopLength or component width changes.
+        mutable std::vector<float> peakCache_;
+        mutable std::size_t cachedLoopLength_ = 0;
+        mutable int cachedWidth_ = 0;
     };
 
     /// Spectre de frequences temps-reel (FFT Cooley-Tukey 512 points).
@@ -173,6 +177,7 @@ private:
     std::array<juce::TextButton, kTrackCount> cutBtns_;
     std::array<juce::TextButton, kTrackCount> trimBtns_;
     std::array<juce::TextButton, kTrackCount> exportTrackBtns_;
+    std::array<juce::ToggleButton, kTrackCount> includeBtns_;  ///< Include track in mix export.
 
     juce::ToggleButton metronomeButton_;
     juce::Slider bpmSlider_;

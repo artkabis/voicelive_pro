@@ -131,21 +131,32 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
     g.setColour(juce::Colours::grey.withAlpha(0.25F));
     g.drawHorizontalLine(static_cast<int>(midY), 2.0F, static_cast<float>(w) - 2.0F);
 
-    // Forme d'onde (peak-detection par pixel)
+    // Forme d'onde (peak-detection par pixel, avec cache pour eviter O(N) par frame).
     g.setColour(juce::Colour(0xFF00D4FF));
     const int drawW = w - 4;
-    for (int px = 0; px < drawW; ++px) {
-        const std::size_t sBegin =
-            static_cast<std::size_t>(px) * len / static_cast<std::size_t>(drawW);
-        const std::size_t sEnd =
-            static_cast<std::size_t>(px + 1) * len / static_cast<std::size_t>(drawW);
-        float peak = 0.0F;
-        for (std::size_t s = sBegin; s < sEnd && s < len; ++s) {
-            peak = std::max(peak, std::abs(audio_->sampleAt(s)));
+    if (drawW > 0) {
+        if (len != cachedLoopLength_ || w != cachedWidth_) {
+            peakCache_.resize(static_cast<std::size_t>(drawW), 0.0F);
+            for (int px = 0; px < drawW; ++px) {
+                const std::size_t sBegin =
+                    static_cast<std::size_t>(px) * len / static_cast<std::size_t>(drawW);
+                const std::size_t sEnd =
+                    static_cast<std::size_t>(px + 1) * len / static_cast<std::size_t>(drawW);
+                float peak = 0.0F;
+                for (std::size_t s = sBegin; s < sEnd && s < len; ++s) {
+                    peak = std::max(peak, std::abs(audio_->sampleAt(s)));
+                }
+                peakCache_[static_cast<std::size_t>(px)] = peak;
+            }
+            cachedLoopLength_ = len;
+            cachedWidth_ = w;
         }
-        const float half = juce::jmin(peak, 1.0F) * (midY - 2.0F);
-        if (half > 0.5F) {
-            g.drawVerticalLine(px + 2, midY - half, midY + half);
+        for (int px = 0; px < drawW; ++px) {
+            const float half =
+                juce::jmin(peakCache_[static_cast<std::size_t>(px)], 1.0F) * (midY - 2.0F);
+            if (half > 0.5F) {
+                g.drawVerticalLine(px + 2, midY - half, midY + half);
+            }
         }
     }
 
@@ -330,6 +341,10 @@ MainComponent::MainComponent() {
         exportTrackBtns_[i].setButtonText("Export " + juce::String(static_cast<int>(i) + 1));
         exportTrackBtns_[i].onClick = [this, i] { exportTrack(i); };
         contentPane_.addAndMakeVisible(exportTrackBtns_[i]);
+
+        includeBtns_[i].setButtonText("MIX");
+        includeBtns_[i].setToggleState(true, juce::dontSendNotification);
+        contentPane_.addAndMakeVisible(includeBtns_[i]);
     }
 
     // Transport
@@ -757,7 +772,8 @@ void MainComponent::updateDiagnostics() {
          << (diag.metronomeEnabled ? "ON" : "OFF") << ", master FX "
          << static_cast<int>(diag.masterEffectCount) << "\n";
 
-    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
     text << "Dossier exports : " << dir.getFullPathName() << "\n";
 
     for (std::size_t i = 0; i < diag.trackCount; ++i) {
@@ -843,9 +859,10 @@ void MainComponent::resized() {
 
         trackArea.removeFromTop(6);
 
-        // Rangee 2 : gain + mute
+        // Rangee 2 : gain + [MIX] [Mute]
         auto row2 = trackArea.removeFromTop(kRowH);
         strips_[i].muteButton.setBounds(row2.removeFromRight(64).reduced(2));
+        includeBtns_[i].setBounds(row2.removeFromRight(56).reduced(2));
         strips_[i].gainSlider.setBounds(row2.reduced(2));
 
         trackArea.removeFromTop(4);
@@ -1086,22 +1103,68 @@ void MainComponent::applyTrackEdit(std::size_t index, std::vector<float> newSamp
 // ─── Export / Sauvegarde ──────────────────────────────────────────────────────
 
 void MainComponent::exportMix() {
-    const std::size_t len = engine_.masterLoopLength();
-    if (len == 0) {
-        juce::Logger::writeToLog("Export mix : rien a exporter (enregistrez une piste d'abord)");
+    // Determine the longest included track to set mix duration.
+    std::size_t mixLen = 0;
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (!includeBtns_[i].getToggleState())
+            continue;
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            mixLen = std::max(mixLen, proc->audio().loopLength());
+        }
+    }
+    if (mixLen == 0) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "Export Mix",
+            "Aucune piste incluse dans le mix.\n"
+            "Activez le bouton MIX sur au moins une piste enregistree.");
         return;
     }
 
-    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    // Render mix locally: sum included, non-muted tracks using their gain sliders.
+    std::vector<float> mixData(mixLen, 0.0F);
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (!includeBtns_[i].getToggleState())
+            continue;
+        const auto* proc = engine_.track(i);
+        if (!proc)
+            continue;
+        const auto& audio = proc->audio();
+        const std::size_t trackLen = audio.loopLength();
+        if (trackLen == 0 || strips_[i].muteButton.getToggleState())
+            continue;
+        const float gain = static_cast<float>(strips_[i].gainSlider.getValue());
+        for (std::size_t s = 0; s < mixLen; ++s) {
+            mixData[s] += audio.sampleAt(s % trackLen) * gain;
+        }
+    }
+    for (float& s : mixData) {
+        s = juce::jlimit(-1.0F, 1.0F, s);
+    }
+
+    wav::AudioData data;
+    data.samples = std::move(mixData);
+    data.sampleRate = static_cast<unsigned>(sampleRate_);
+    data.channels = 1;
+
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
     dir.createDirectory();
     const juce::String filename =
         "mix_" + juce::String(juce::Time::getCurrentTime().toMilliseconds()) + ".wav";
-    const std::string path = dir.getChildFile(filename).getFullPathName().toStdString();
+    const juce::File outFile = dir.getChildFile(filename);
+    const std::string path = outFile.getFullPathName().toStdString();
 
-    const auto status = engine_.exportMixToFile(path, len);
+    const auto status = wav::write(path, data);
     if (!status.ok()) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Export Mix",
+                                               "Echec de l'ecriture du fichier WAV.");
         juce::Logger::writeToLog("Export mix echoue");
     } else {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::InfoIcon, "Export Mix",
+            "Mix exporte avec succes !\n\n" + outFile.getFullPathName() +
+                "\n\nAccessible depuis le gestionnaire de fichiers Android\n"
+                "sous Android > data > [package] > files");
         juce::Logger::writeToLog("Mix exporte : " + juce::String(path.c_str()));
     }
 }
@@ -1126,18 +1189,29 @@ void MainComponent::exportTrack(std::size_t index) {
         data.samples[s] = audio.sampleAt(s);
     }
 
-    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
     dir.createDirectory();
     const juce::String filename = "track" + juce::String(static_cast<int>(index) + 1) + "_" +
                                   juce::String(juce::Time::getCurrentTime().toMilliseconds()) +
                                   ".wav";
-    const std::string path = dir.getChildFile(filename).getFullPathName().toStdString();
+    const juce::File outFile = dir.getChildFile(filename);
+    const std::string path = outFile.getFullPathName().toStdString();
 
     const auto status = wav::write(path, data);
     if (!status.ok()) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "Export Piste",
+            "Echec de l'export de la piste " + juce::String(static_cast<int>(index) + 1));
         juce::Logger::writeToLog("Export piste " + juce::String(static_cast<int>(index) + 1) +
                                  " echoue");
     } else {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::InfoIcon, "Export Piste",
+            "Piste " + juce::String(static_cast<int>(index) + 1) + " exportee !\n\n" +
+                outFile.getFullPathName() +
+                "\n\nAccessible depuis le gestionnaire de fichiers Android\n"
+                "sous Android > data > [package] > files");
         juce::Logger::writeToLog("Piste " + juce::String(static_cast<int>(index) + 1) +
                                  " exportee : " + juce::String(path.c_str()));
     }
@@ -1150,21 +1224,28 @@ void MainComponent::saveProject() {
         return;
     }
 
-    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
     dir.createDirectory();
-    const std::string path =
-        dir.getChildFile("voicelive_project.vlp").getFullPathName().toStdString();
+    const juce::File outFile = dir.getChildFile("voicelive_project.vlp");
+    const std::string path = outFile.getFullPathName().toStdString();
 
     const auto status = project_io::saveToFile(path, result.value());
     if (!status.ok()) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Sauvegarde",
+                                               "Echec de la sauvegarde du projet.");
         juce::Logger::writeToLog("Sauvegarde echouee");
     } else {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::InfoIcon, "Sauvegarde",
+            "Projet sauvegarde !\n\n" + outFile.getFullPathName());
         juce::Logger::writeToLog("Projet sauvegarde : " + juce::String(path.c_str()));
     }
 }
 
 void MainComponent::loadProject() {
-    const juce::File dir = juce::File::getSpecialLocation(juce::File::userDocumentsDirectory);
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
     const std::string path =
         dir.getChildFile("voicelive_project.vlp").getFullPathName().toStdString();
 
