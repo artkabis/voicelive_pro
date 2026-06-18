@@ -79,6 +79,12 @@ adb install -r VoiceLivePro-debug.apk
 # la ligne "Build :" du panneau Diag doit correspondre au commit testé
 ```
 
+> **« App non installée » / aucun changement après mise à jour ?** Si l'APK
+> précédent avait une **signature différente**, Android refuse l'installation
+> par-dessus → **désinstalle d'abord l'app**, puis réinstalle. Le pipeline
+> utilise désormais un **keystore debug stable** (`ci/debug.keystore`) : tous les
+> APK partagent la même signature et s'installent par-dessus le précédent.
+
 ---
 
 ## Checklist quand « ça ne marche pas »
