@@ -179,3 +179,9 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+# Builds CMake additionnels
+build-release/
+build-rel/
+
+# Artefacts de test générés (écrits dans le CWD)
+vlpro_*

@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MIT
+# Barrière CI : tout push / PR sur la branche de refonte doit passer ces portes.
+name: CI (core)
+
+on:
+  push:
+    branches: ["claude/audio-recording-app-feasibility-g7nde9", "main"]
+  pull_request:
+
+# Annule les exécutions précédentes encore en cours sur la même ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  jucer-sources:
+    name: Cohérence des sources (.jucer)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérifier que chaque source est déclarée dans le .jucer
+        run: ./scripts/check_jucer.sh
+
+  format:
+    name: Format (clang-format)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Vérifier le formatage
+        run: |
+          find core dsp engine testing -name '*.cpp' -o -name '*.hpp' \
+            | xargs clang-format-18 --dry-run --Werror
+
+  build-test:
+    name: Build + Tests (${{ matrix.compiler }}, ${{ matrix.build_type }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [g++, clang++]
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurer
+        env:
+          CXX: ${{ matrix.compiler }}
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+             -DVOICELIVE_WARNINGS_AS_ERRORS=ON
+      - name: Compiler
+        run: cmake --build build -j
+      - name: Tests
+        run: ctest --test-dir build --output-on-failure
+
+  sanitizers:
+    name: Sanitizers (ASan + UBSan)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configurer (sanitizers ON)
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug -DVOICELIVE_ENABLE_SANITIZERS=ON
+      - name: Compiler
+        run: cmake --build build -j
+      - name: Tests instrumentés
+        run: ctest --test-dir build --output-on-failure
+
+  static-analysis:
+    name: Analyse statique (clang-tidy)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Générer la base de compilation
+        run: cmake -S . -B build -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+      - name: clang-tidy
+        # N'affiche la sortie que pour les fichiers en échec (les "N warnings
+        # generated" viennent des en-têtes système, hors de notre code).
+        run: |
+          status=0
+          while IFS= read -r file; do
+            if ! output=$(clang-tidy-18 --quiet -p build "$file" 2>&1); then
+              echo "::group::clang-tidy: $file"
+              echo "$output"
+              echo "::endgroup::"
+              status=1
+            fi
+          done < <(find core dsp engine -name '*.cpp')
+          [ "$status" -eq 0 ] && echo "clang-tidy : OK (aucune erreur)"
+          exit $status

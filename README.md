@@ -1,451 +1,238 @@
 # VoiceLive Pro 🎸🎤
 
-Application professionnelle de traitement audio temps réel avec looper 3 pistes, effets vocaux/guitare, métronome, accordeur chromatique et chaîne de mastering.
+**Moteur audio temps réel multiplateforme** (looper multipiste, effets, mixage)
+bâti sur un **cœur C++ pur, testé et portable** — desktop, mobile (Android) et,
+à terme, web (WebAssembly).
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Python](https://img.shields.io/badge/python-3.8%2B-blue)
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)
+![Language](https://img.shields.io/badge/C%2B%2B-20-blue)
+![Tests](https://img.shields.io/badge/tests-77%20✓-success)
+![Platform](https://img.shields.io/badge/platform-desktop%20%7C%20Android%20%7C%20web-lightgrey)
+
+> ℹ️ **v2 — refonte C++.** Ce README décrit l'architecture refactorisée. La v1
+> Python (looper en temps réel via Python) est conservée comme **référence
+> fonctionnelle** (voir [Historique v1](#-historique--v1-python)). La raison de
+> la refonte : le DSP temps réel en Python (boucles échantillon par échantillon,
+> GIL, allocations dans le callback) plafonnait la latence/qualité et fermait la
+> porte du mobile. Le cœur compilé lève ces verrous.
 
 ---
 
-## 📋 Table des matières
+## 📐 Architecture
 
-- [Fonctionnalités](#-fonctionnalités)
-- [Prérequis](#-prérequis)
-- [Installation](#-installation)
-- [Lancement](#-lancement)
-- [Utilisation](#-utilisation)
-- [Architecture](#-architecture)
-- [Configuration](#-configuration)
-- [Dépannage](#-dépannage)
-- [Contribution](#-contribution)
-- [Licence](#-licence)
+Une règle gouverne tout : **la logique métier et le DSP sont du C++ pur, sans
+dépendance à l'UI ni au système.** Ils compilent à l'identique en natif et en
+WebAssembly, et sont testables à 100 % en isolation.
 
----
+```
+┌──────────────────────────────────────────────────────────────┐
+│ app/      UI + I/O audio (JUCE desktop/mobile, shell web WASM) │
+├──────────────────────────────────────────────────────────────┤
+│ engine/   Temps réel : mixage, boucles, file de commandes      │
+│           lock-free, processeurs de piste                      │
+├──────────────────────────────────────────────────────────────┤
+│ dsp/      Effets temps réel (Reverb, Delay, chaîne d'effets)   │
+├──────────────────────────────────────────────────────────────┤
+│ core/     Logique métier pure, zéro dépendance                 │
+└──────────────────────────────────────────────────────────────┘
+```
 
-## ✨ Fonctionnalités
+Chaque couche ne dépend **que** des couches inférieures. Détails :
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
-### Looper 3 Pistes
-- Enregistrement/playback/overdub indépendants
-- Contrôles avancés : play, pause, stop, seek
-- Visualisation waveform temps réel
-- Auto-sync intelligent avec quantification (1x, 2x, 4x, 1/2, 1/4)
-- Import audio WAV/FLAC
-- Export mixage avec bouclage automatique
-- Éditeur waveform avec découpage
-- Contrôle global (play/pause/stop all)
-- Gain et mute individuels
-
-### Effets Audio
-**Vocaux :**
-- Harmony (2-4 voix)
-- Reverb Pro (room size, damping)
-
-**Guitare :**
-- Wah-Wah
-- Chorus
-
-### Outils Musicaux
-- **Métronome** : 40-300 BPM, tap tempo, signatures personnalisées, pré-count
-- **Accordeur chromatique** : Mode guitare folk 6 cordes, détection pitch temps réel
-- **Mastering Chain** : EQ 5 bandes, compresseur, limiteur
-
-### Gestion Projet
-- Sauvegarde/chargement projets
-- Undo/Redo (20 actions)
-- Auto-save (5 minutes)
+| Couche    | État        | Tests |
+|-----------|-------------|-------|
+| `core/`   | 🟢 en cours | 30    |
+| `dsp/`    | 🟢 en cours | 13    |
+| `engine/` | 🟢 en cours | 34    |
+| `app/`    | 🟡 amorcé (JUCE) | via CI |
 
 ---
 
-## 🔧 Prérequis
+## ✨ Fonctionnalités disponibles
 
-- **Système d'exploitation** : Windows 10/11, Linux, macOS
-- **Python** : 3.8 ou supérieur
-- **RAM** : 4 GB minimum, 8 GB recommandé
-- **Interface audio** : Carte son avec drivers ASIO (recommandé pour latence < 10ms)
-- **Navigateur** : Chrome, Firefox, Edge (version récente)
+### 🔁 Looper / pistes (`core`, `engine`)
+- **Machine à états de piste** stricte (Empty → Recording → Playing →
+  Overdubbing → Stopped) : impossible d'atteindre un état incohérent.
+- **Multipiste** (1 à 8 pistes) avec mixage et limiteur de sortie.
+- **Synchronisation** : la 1ʳᵉ boucle définit la référence (maître), les
+  suivantes sont alignées sur un multiple musical (¼/½/1×/2×/4×).
+- **Enregistrement, lecture en boucle, overdub** (superposition de couches).
+- **Stockage de boucle à capacité fixe** (zéro allocation en temps réel).
+- **Gain & mute** par piste ; piste sélectionnée.
+
+### ⏱️ Transport musical (`core`)
+- **Tempo (BPM)** borné, **signature rythmique** validée.
+- Conversions **temps musical ↔ échantillons** (samples/temps, samples/mesure).
+- **Quantification** au temps ou à la mesure.
+- **Alignement de boucle** sur multiples musicaux (¼ / ½ / 1× / 2× / 4×).
+- **Métronome** (`engine`) : clic temps réel, accent sur le 1er temps, mixé à la
+  sortie ; activable/désactivable, gain réglable.
+
+### 🎚️ Effets (`dsp`)
+- **Reverb** (algorithme Freeverb : 8 combs + 4 allpass).
+- **Delay** (écho à ligne de retard : délai, feedback, mix).
+- **Chorus** (ligne de retard modulée par LFO : rate, depth, mix).
+- **Wah** (passe-bande résonant balayé par LFO : fréquences, résonance, mix).
+- **Chaîne d'effets par piste** (`EffectChain`) : effets ordonnés, insérables à
+  chaud, interface `Effect` commune à contrat temps réel strict.
+
+### 🧩 Moteur temps réel (`engine`)
+- **`LooperEngine`** : assemble N pistes + transport + mixage.
+- **File de commandes lock-free** (`RingBuffer` SPSC) UI → thread audio.
+- **Pont de réglages** avec `core::Project` (export/import : nom, transport,
+  gains/mute, sélection).
+- **Sauvegarde / chargement de projet** (`core::project_io`) : sérialisation des
+  réglages en fichier texte versionné (`serialize`/`deserialize`/`saveToFile`/
+  `loadFromFile`).
+- **Conversion de canaux** stéréo ↔ mono testée (`ChannelUtils`).
+- **Import / export WAV** (`engine::wav`) : lecture (PCM 16 bits / float 32 bits)
+  et écriture (PCM 16 bits), parseur borné et validé.
+
+### 🎸 Accordeur (`dsp` + `core`)
+- **Détection de hauteur** (`dsp::PitchDetector`, méthode NSDF/McLeod) :
+  estime la fondamentale d'une fenêtre audio.
+- **Conversion musicale** (`core::music`) : fréquence → note (12-TET, A4=440) +
+  écart en cents → affichage d'accordeur.
+
+### 🎛️ Mastering (`dsp`)
+- **Compresseur** (`dsp::Compressor`) : seuil / ratio / attaque / relâche /
+  makeup, détecteur de crête.
+- **Égaliseur 3 bandes** (`dsp::Equalizer`) : low shelf / mid peak / high shelf
+  (biquads RBJ) ; gains nuls = passthrough exact.
+
+### 🖥️ Application (`app`, JUCE)
+- **UI multipiste** : 3 pistes (Rec/Play/Stop/Clear + gain + mute) via la file
+  lock-free, **métronome + BPM**, **égaliseur de mastering** (3 bandes) et
+  **accordeur** (affichage note + cents rafraîchi par Timer).
+- Pipelines CI : **binaire desktop** et **APK Android (debug)** en artefacts.
+
+### 🛡️ Robustesse transverse
+- Gestion d'erreur **explicite sans exceptions** (`Result<T>` / `Status`,
+  `[[nodiscard]]` : impossible d'ignorer une erreur).
+- **Types forts à invariants** (`Gain`, `SampleRate`…) : états invalides non
+  représentables.
+- **Contrats temps réel** : aucune allocation / verrou / I/O dans le callback.
 
 ---
 
-## 📦 Installation
+## 🧱 Modularité & extension
 
-### 1. Installation Python
+L'ajout de fonctionnalités est volontairement **à faible friction et testé** :
 
-#### Windows
-1. Téléchargez Python depuis [python.org](https://www.python.org/downloads/)
-2. Lancez l'installateur
-3. ⚠️ **IMPORTANT** : Cochez "Add Python to PATH"
-4. Cliquez sur "Install Now"
-5. Vérifiez l'installation :
+| Pour ajouter… | On touche à… | Effort |
+|---------------|--------------|--------|
+| un **effet** | un fichier `dsp/` + son test | ~30 min |
+| une **commande** UI→audio | `EngineCommand::Action` + `applyCommand` | ~10 min |
+| un **type métier** | un fichier `core/` + son test | isolé |
+
+**Exemple — ajouter un effet :**
+1. Créer `dsp/include/voicelive/dsp/MonEffet.hpp` + `dsp/src/MonEffet.cpp`
+   héritant de `voicelive::dsp::Effect` (`prepare` / `process` / `reset`).
+2. L'ajouter à `dsp/CMakeLists.txt`.
+3. Écrire `dsp/tests/test_mon_effet.cpp`.
+4. Il est immédiatement insérable :
+   `engine.effectsForTrack(i)->add(std::make_unique<MonEffet>());` — sans
+   modifier `engine` ni `app`.
+
+Chaque ajout passe par les mêmes **barrières automatiques** (ci-dessous) : une
+régression ou une erreur d'intégration est attrapée avant le merge.
+
+Conventions complètes : [`docs/CONVENTIONS.md`](docs/CONVENTIONS.md).
+
+---
+
+## 🛡️ Barrières de qualité
+
+| Porte | Outil | Où |
+|-------|-------|-----|
+| Tests unitaires (**77**, chemins nominaux **et** d'erreur) | `ctest` | local + CI |
+| Build **Debug + Release**, 2 compilateurs | g++ / clang | CI |
+| Warnings = erreurs | `-Werror -Wall -Wextra -Wconversion …` | compilation |
+| Mémoire / UB | **ASan + UBSan** | local + CI |
+| Formatage | `clang-format` | pre-commit + CI |
+| Analyse statique | `clang-tidy` (strict) | CI |
+| Secrets / gros fichiers | pre-commit hooks | commit |
+
+Tout reproduire en local : `./scripts/check.sh`.
+
+---
+
+## 🚀 Construire & tester
+
+### Cœur (core + dsp + engine) — partout, sans dépendance
 
 ```bash
-python --version
-pip --version
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
+cmake --build build -j
+ctest --test-dir build --output-on-failure
 ```
 
-#### Linux (Ubuntu/Debian)
+Prérequis : CMake ≥ 3.24, un compilateur C++20 (GCC 13+/Clang 16+).
+
+### Application desktop (JUCE)
+
+Voir [`app/README.md`](app/README.md). JUCE est récupéré automatiquement
+(FetchContent) ; l'app est **opt-in** :
 
 ```bash
-sudo apt update
-sudo apt install python3 python3-pip python3-venv
-python3 --version
+cmake -S . -B build -DVOICELIVE_BUILD_APP=ON -DCMAKE_BUILD_TYPE=Release
+cmake --build build --target VoiceLiveApp -j
 ```
 
-#### macOS
+### APK Android
 
-```bash
-# Avec Homebrew
-brew install python3
-
-# Vérification
-python3 --version
-```
+Généré par la CI ([`.github/workflows/android.yml`](.github/workflows/android.yml)) :
+**Actions → « Android APK » → artefact `VoiceLivePro-debug-apk`**, puis sideload.
+Le build Android ne se fait pas en local sans NDK ; détails dans
+[`app/README.md`](app/README.md).
 
 ---
 
-### 2. Installation ASIO4ALL (Windows uniquement)
+## 🗺️ Roadmap
 
-ASIO4ALL permet d'obtenir une latence audio ultra-faible (< 10ms).
-
-1. Téléchargez ASIO4ALL depuis [asio4all.org](http://www.asio4all.org/)
-2. Lancez l'installateur `ASIO4ALL_v2.15.exe`
-3. Suivez l'assistant d'installation (options par défaut)
-4. Redémarrez votre ordinateur
-
-**Configuration ASIO4ALL :**
-1. Ouvrez le panneau ASIO4ALL
-2. Sélectionnez votre carte son
-3. Réglez la taille du buffer : **128 samples** (compromis latence/stabilité)
-4. Activez votre interface audio
-
-> **Note** : Si vous avez une interface audio professionnelle (Focusrite, PreSonus, etc.), utilisez ses drivers ASIO natifs au lieu d'ASIO4ALL.
+- [x] Pipeline APK Android : **APK debug signé, généré et téléchargeable** en
+      artefact CI (`VoiceLivePro-debug-apk`).
+- [ ] 3ᵉ effet (chorus / wah) + insertion d'effets pilotée en temps réel.
+- [ ] UI multipiste complète (niveaux, sélection d'effets).
+- [ ] Sauvegarde/chargement de projet (sérialisation de `core::Project`).
+- [ ] Cible **web** (cœur en WebAssembly + AudioWorklet).
+- [ ] Signature release Android (Play Store).
 
 ---
 
-### 3. Installation des dépendances Python
-
-#### Cloner le dépôt
-
-```bash
-git clone https://github.com/artkabis/voicelive_pro.git
-cd voicelive_pro
-```
-
-#### Créer un environnement virtuel (recommandé)
-
-```bash
-# Windows
-python -m venv venv
-venv\Scripts\activate
-
-# Linux/macOS
-python3 -m venv venv
-source venv/bin/activate
-```
-
-#### Installer les dépendances
-
-Le projet contient un fichier `requirements.txt` avec toutes les dépendances nécessaires :
-
-```bash
-pip install -r requirements.txt
-```
-
-**Contenu de `requirements.txt` :**
-```
-flask==3.0.0
-flask-socketio==5.3.5
-flask-cors==4.0.0
-eventlet==0.33.3
-sounddevice==0.4.6
-numpy==1.24.3
-soundfile==0.12.1
-scipy==1.11.3
-python-socketio==5.10.0
-```
-
-#### Vérification de l'installation
-
-```bash
-python -c "import sounddevice; print(sounddevice.query_devices())"
-```
-
-Cette commande doit afficher la liste de vos périphériques audio.
-
----
-
-## 🚀 Lancement
-
-### Démarrage du serveur
-
-```bash
-# Assurez-vous d'être dans le dossier racine du projet
-python run_web.py
-```
-
-**Sortie attendue :**
-```
-======================================================================
-🎸 VOICELIVE PRO - SERVEUR WEB
-======================================================================
-
-✅ Serveur démarré sur: http://localhost:5000
-   Mode: eventlet + sync master + export audio
-
-======================================================================
-```
-
-### Accès à l'interface
-
-1. Ouvrez votre navigateur
-2. Accédez à : **http://localhost:5000**
-3. L'interface VoiceLive Pro se charge
-
----
-
-## 🎵 Utilisation
-
-### Configuration initiale
-
-1. **Sélection des périphériques audio** :
-   - Input : Sélectionnez votre microphone/interface (préférez ASIO)
-   - Output : Sélectionnez vos enceintes/casque (même type que l'input)
-   - ⚠️ **Important** : Input et Output doivent utiliser le même type de driver (ASIO avec ASIO, ou Standard avec Standard)
-
-2. **Démarrer le système audio** :
-   - Cliquez sur "Démarrer le système audio"
-   - Vérifiez que les indicateurs de niveau s'affichent
-
-### Workflow d'enregistrement
-
-#### Méthode 1 : Enregistrement pas à pas
-
-**Piste 1 (base rythmique)** :
-- Sélectionnez la piste 1 (clic dessus)
-- Activez le métronome si besoin
-- Cliquez "Record/Stop" (bouton rouge)
-- Enregistrez votre boucle
-- Re-cliquez "Record/Stop" pour terminer
-- La piste devient automatiquement le "master"
-
-**Pistes 2 et 3** :
-- Sélectionnez la piste suivante
-- Cliquez "Record/Stop"
-- Enregistrez pendant que la piste 1 joue
-- L'auto-sync alignera automatiquement la longueur
-
-**Overdub** :
-- Cliquez "Overdub" pour ajouter des couches sur une piste existante
-
-#### Méthode 2 : Import audio
-
-1. Cliquez "📁 Importer Audio" sur une piste
-2. Sélectionnez un fichier WAV ou FLAC
-3. Le fichier est automatiquement chargé et devient disponible
-
-### Contrôles globaux
-
-**Boutons de transport global** :
-- ⏮️ **Restart** : Remet toutes les pistes au début et lance la lecture
-- ▶️ **Play All** : Lance toutes les pistes (synchronisées si auto-sync activé)
-- ⏸️ **Pause All** : Met en pause toutes les pistes
-- ⏹️ **Stop All** : Arrête toutes les pistes
-
-### Édition de piste
-
-1. Cliquez "✂️ Éditer" sur une piste
-2. **Éditeur waveform** s'ouvre :
-   - Cliquez sur la waveform pour déplacer les marqueurs start/end
-   - Ajustez précisément avec les champs numériques
-   - Cliquez "▶️ Prévisualiser" pour écouter
-   - Cliquez "✂️ Appliquer le découpage" pour valider
-
-### Synchronisation
-
-**Auto-Sync** :
-- Active par défaut
-- Quantifie automatiquement les pistes (1x, 2x, 4x, 1/2, 1/4 du master)
-- Correction si écart < 10%
-
-**Sync Now** :
-- Aligne manuellement les positions de lecture de toutes les pistes
-
-**Nudge** :
-- Décale temporellement une piste (±10ms, ±50ms)
-
-### Export
-
-1. Configurez les options "Loop à l'export" sur chaque piste
-   - ✅ Activé : La piste boucle pendant toute la durée du mix
-   - ❌ Désactivé : La piste joue une seule fois
-2. Cliquez "Exporter WAV" ou "Exporter FLAC"
-3. Le fichier est téléchargé automatiquement
-4. Normalisation automatique à -1dB
-
-### Métronome
-
-1. Activez le métronome (bouton ON)
-2. Réglez le BPM (slider ou Tap Tempo)
-3. Choisissez la signature (4/4, 3/4, etc.)
-4. Configurez le pré-count si souhaité
-5. Cliquez "Start" pour démarrer
-
-### Accordeur
-
-1. Activez l'accordeur (bouton ON)
-2. Jouez une corde à vide de votre guitare
-3. La corde détectée s'illumine en bleu
-4. Ajustez jusqu'à ce qu'elle devienne verte (accordée ±5 cents)
-
-### Effets et Mastering
-
-- **Effets** : Activez/désactivez individuellement, ajustez les paramètres en temps réel
-- **Mastering** : Active les modules EQ, Compresseur, Limiteur selon vos besoins
-
----
-
-## 🏗️ Architecture
+## 📁 Structure du dépôt
 
 ```
 voicelive_pro/
-├── src/
-│   ├── audio/              # Moteur audio et traitement
-│   │   ├── engine_optimized.py
-│   │   ├── looper.py
-│   │   ├── metronome.py
-│   │   ├── tuner.py
-│   │   ├── mastering_chain.py
-│   │   ├── undo_redo.py
-│   │   └── project_manager.py
-│   ├── effects/            # Effets audio
-│   │   ├── vocal/
-│   │   └── guitar/
-│   ├── web/               # Serveur Flask et frontend
-│   │   ├── server.py
-│   │   └── static/
-│   │       └── index.html
-│   └── utils/
-│       └── logger.py
-├── run_web.py            # Point d'entrée
-├── requirements.txt      # Dépendances Python
-└── README.md
-```
-
-**Technologies** :
-- Backend : Python, Flask, SocketIO, sounddevice
-- Frontend : React 18, Tailwind CSS, Socket.IO Client
-- Communication : WebSockets temps réel
-
----
-
-## ⚙️ Configuration
-
-### Latence audio
-
-Modifier le buffer size dans l'interface :
-- **128 samples** : ~3ms (recommandé avec ASIO)
-- **256 samples** : ~6ms (bon compromis)
-- **512 samples** : ~12ms (stable, plus de latence)
-
-### Ports
-
-Par défaut, le serveur écoute sur :
-- **Port** : 5000
-- **URL** : http://localhost:5000
-
-Pour changer le port, modifiez `run_web.py` :
-
-```python
-socketio.run(app, host='0.0.0.0', port=8080)
+├── core/        # logique métier pure (LooperTrack, Transport, Project…)
+├── dsp/         # effets (Effect, Reverb, Delay, EffectChain)
+├── engine/      # temps réel (RingBuffer, LoopAudio, Mixer, LooperEngine…)
+├── app/         # application JUCE (desktop/mobile)
+├── testing/     # micro-framework de test partagé
+├── cmake/       # modules CMake (warnings, sanitizers)
+├── docs/        # ARCHITECTURE, CONVENTIONS, DEVLOG
+├── .github/     # CI (cœur, desktop, Android)
+├── scripts/     # check.sh (reproduit la CI en local)
+├── VoiceLivePro.jucer  # projet Projucer (export Android)
+└── old/               # v1 Python (legacy, préservée — non maintenue)
 ```
 
 ---
 
-## 🔍 Dépannage
+## 🕰️ Historique — v1 (Python)
 
-### Problème : "Aucun périphérique audio détecté"
-
-**Solution** :
-
-```bash
-python -c "import sounddevice; print(sounddevice.query_devices())"
-```
-
-Si aucun device n'apparaît, réinstallez `sounddevice` :
-
-```bash
-pip uninstall sounddevice
-pip install sounddevice --no-cache-dir
-```
-
-### Problème : Latence élevée (> 50ms)
-
-**Solutions** :
-1. Utilisez des drivers ASIO (Windows)
-2. Réduisez le buffer size (128 samples)
-3. Fermez les applications gourmandes en CPU
-4. Désactivez les effets non utilisés
-
-### Problème : Crackling/clipping audio
-
-**Solutions** :
-1. Augmentez le buffer size (256 ou 512)
-2. Réduisez le nombre d'effets actifs
-3. Baissez les gains individuels des pistes
-4. Vérifiez la charge CPU (< 80%)
-
-### Problème : "ASIO device not found"
-
-**Solutions** :
-1. Vérifiez que ASIO4ALL est installé et configuré
-2. Redémarrez l'application
-3. Dans ASIO4ALL, vérifiez que votre carte son est activée
-
-### Problème : Pistes désynchronisées
-
-**Solutions** :
-1. Activez "Auto-Sync" dans le panneau de synchronisation
-2. Utilisez "Sync Now" pour forcer l'alignement
-3. Utilisez les boutons Nudge pour ajustements fins
-
----
-
-## 🤝 Contribution
-
-Les contributions sont les bienvenues !
-
-1. Forkez le projet
-2. Créez une branche (`git checkout -b feature/AmazingFeature`)
-3. Committez vos changements (`git commit -m 'Add AmazingFeature'`)
-4. Pushez vers la branche (`git push origin feature/AmazingFeature`)
-5. Ouvrez une Pull Request
-
-**Guidelines** :
-- Code propre et commenté
-- Tests unitaires si applicable
-- Documentation des nouvelles fonctionnalités
+La première version (looper 3 pistes, effets, métronome, accordeur, mastering)
+était écrite en **Python** (Flask/SocketIO + sounddevice). Elle est conservée
+dans [`old/`](old/) comme **référence fonctionnelle** (non maintenue),
+mais n'est plus la cible de développement — la v2 C++ la remplace pour la
+latence, la qualité DSP et le support mobile. Le journal de la refonte est dans
+[`docs/DEVLOG.md`](docs/DEVLOG.md).
 
 ---
 
 ## 📄 Licence
 
-Distribué sous licence MIT. Voir `LICENSE` pour plus d'informations.
+Distribué sous licence **MIT**. Voir [`LICENSE`](LICENSE).
 
----
-
-## 🙏 Remerciements
-
-- [sounddevice](https://python-sounddevice.readthedocs.io/) - Interface audio Python
-- [Flask-SocketIO](https://flask-socketio.readthedocs.io/) - WebSockets temps réel
-- [React](https://react.dev/) - Interface utilisateur
-- [Tailwind CSS](https://tailwindcss.com/) - Framework CSS
-
----
-
-## 📧 Contact
-
-Lien du projet : [https://github.com/artkabis/voicelive_pro](https://github.com/artkabis/voicelive_pro)
-
----
-
-**Fait avec ❤️ pour les musiciens**
+**Fait avec ❤️ pour les musiciens.**
