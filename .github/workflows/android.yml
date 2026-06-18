@@ -66,6 +66,17 @@ jobs:
           "$PROJUCER" --set-global-search-path linux defaultJuceModulePath "$PWD/juce/modules"
           "$PROJUCER" --resave VoiceLivePro.jucer
 
+      - name: Vérifier le manifeste Android (permissions)
+        run: |
+          MANIFEST="$(find Builds/Android -name AndroidManifest.xml | head -1)"
+          echo "Manifeste : $MANIFEST"
+          echo "----- permissions déclarées -----"
+          grep -i "uses-permission" "$MANIFEST" || echo "AUCUNE permission déclarée !"
+          echo "---------------------------------"
+          grep -qi "RECORD_AUDIO" "$MANIFEST" \
+            && echo "OK : RECORD_AUDIO présent" \
+            || echo "ATTENTION : RECORD_AUDIO ABSENT du manifeste"
+
       - name: Installer le keystore debug stable
         # IMPORTANT : keystore committé (ci/debug.keystore) → tous les APK ont la
         # MÊME signature, donc s'installent par-dessus l'APK précédent. Sinon
@@ -80,9 +91,9 @@ jobs:
           chmod +x ./gradlew || true
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Publier l'APK
+      - name: Publier l'APK (nom unique = numéro de run + commit)
         uses: actions/upload-artifact@v4
         with:
-          name: VoiceLivePro-debug-apk
+          name: VoiceLivePro-r${{ github.run_number }}-${{ github.sha }}
           path: Builds/Android/**/outputs/apk/**/*.apk
           if-no-files-found: error
