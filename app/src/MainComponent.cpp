@@ -283,6 +283,13 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     }
 
     engine_.process(monoOut, monoIn);
+
+    // Couper la sortie haut-parleur pendant l'enregistrement pour éviter le larsen.
+    // Le moteur enregistre quand même l'entrée micro correctement.
+    if (anyTrackRecording_.load(std::memory_order_acquire)) {
+        std::fill(monoOut.begin(), monoOut.end(), 0.0F);
+    }
+
     channels::spreadToChannels(outputPtrs.data(), static_cast<std::size_t>(numChannels), monoOut);
 }
 
@@ -310,6 +317,10 @@ void MainComponent::updateDiagnostics() {
     juce::String text;
     text << "VoiceLive Pro v2.0.0  |  JUCE " << juce::SystemStats::getJUCEVersion() << "\n";
     text << "Build : " << __DATE__ << " " << __TIME__ << "\n";
+
+    if (anyTrackRecording_.load(std::memory_order_relaxed)) {
+        text << "[REC EN COURS] Speaker coupe - utiliser des ecouteurs pour le retour\n";
+    }
 
     if (auto* device = deviceManager.getCurrentAudioDevice(); device != nullptr) {
         text << "Audio : " << device->getName() << "  "
@@ -441,8 +452,10 @@ void MainComponent::recordOrFinish(std::size_t index) {
     const auto* processor = engine_.track(index);
     if (processor != nullptr && processor->track().state() == TrackState::Recording) {
         postCommand(EngineCommand::Action::FinishRecording, index, 1.0F, false);
+        anyTrackRecording_.store(false, std::memory_order_release);
     } else {
         postCommand(EngineCommand::Action::Record, index, 1.0F, false);
+        anyTrackRecording_.store(true, std::memory_order_release);
     }
 }
 
@@ -454,6 +467,12 @@ void MainComponent::postCommand(EngineCommand::Action action, std::size_t track,
     command.gain = gain;
     command.muted = muted;
     const bool accepted = engine_.post(command);
+
+    // Si la piste est effacée ou stoppée, on annule le flag d'enregistrement
+    // (cas : Clear/Stop pendant un enregistrement actif).
+    if (action == EngineCommand::Action::Clear || action == EngineCommand::Action::Stop) {
+        anyTrackRecording_.store(false, std::memory_order_release);
+    }
 
     // Trace chaque clic : prouve que l'UI répond, même si l'audio est mort.
     juce::Logger::writeToLog(juce::String("Clic piste ") +

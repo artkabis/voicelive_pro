@@ -13,6 +13,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include <array>
+#include <atomic>
 #include <cstddef>
 #include <vector>
 
@@ -74,6 +75,10 @@ private:
     std::vector<float> monoIn_;
     std::vector<float> monoOut_;
     std::vector<float> analysis_;  // fenêtre glissante pour l'accordeur
+
+    // Vrai quand au moins une piste est en cours d'enregistrement.
+    // Lu par le thread audio pour couper le haut-parleur (anti-larsen).
+    std::atomic<bool> anyTrackRecording_{false};
 
     // Conteneur de défilement — contentPane_ avant viewport_ pour que viewport_
     // soit détruit en premier (évite use-after-free lors de la destruction).
