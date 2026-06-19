@@ -94,11 +94,54 @@ jobs:
           mkdir -p ~/.android
           cp ci/debug.keystore ~/.android/debug.keystore
 
+      - name: Diagnostic du projet généré (sources & toolchain)
+        # Aide à repérer en amont un .cpp absent du .jucer (erreur de lien) ou un
+        # mauvais NDK. S'exécute toujours, avant Gradle.
+        run: |
+          echo "::group::Toolchain"
+          echo "NDK installés : $(ls "$ANDROID_SDK_ROOT/ndk" 2>/dev/null || echo '?')"
+          echo "::endgroup::"
+          echo "::group::Sources C++ référencées par le projet Android généré"
+          find Builds/Android -name CMakeLists.txt \
+            -exec grep -hoE "[A-Za-z0-9_/]+\.cpp" {} \; | sort -u || true
+          echo "::endgroup::"
+
       - name: Build Gradle (assembleDebug)
         working-directory: Builds/Android
         run: |
           chmod +x ./gradlew || true
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          set -o pipefail
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 \
+            | tee "$GITHUB_WORKSPACE/gradle-build.log"
+
+      - name: Diagnostic en cas d'échec (erreurs natives ciblées)
+        # La vraie erreur clang/ninja est noyée dans la stacktrace Gradle.
+        # On la ré-affiche seule, à la fin du log, pour un diagnostic immédiat.
+        if: failure()
+        run: |
+          echo "::group::Erreurs de compilation/lien natives"
+          grep -nE "error:|FAILED:|undefined (symbol|reference)|ninja: build stopped|fatal error" \
+            "$GITHUB_WORKSPACE/gradle-build.log" \
+            || echo "Aucune ligne 'error:' détectée — voir l'artefact android-debug-logs."
+          echo "::endgroup::"
+          echo "::group::Logs natifs CMake/.cxx (extraits)"
+          while IFS= read -r f; do
+            echo "----- $f -----"
+            tail -n 40 "$f"
+          done < <(find Builds/Android -path "*/.cxx/*" -name "*.log" 2>/dev/null) || true
+          echo "::endgroup::"
+
+      - name: Archiver les logs de diagnostic (échec uniquement)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-logs-r${{ github.run_number }}
+          path: |
+            gradle-build.log
+            Builds/Android/**/.cxx/**/*.log
+            Builds/Android/**/AndroidManifest.xml
+            Builds/Android/**/CMakeLists.txt
+          if-no-files-found: warn
 
       - name: Publier l'APK (nom unique = numéro de run + commit)
         uses: actions/upload-artifact@v4
