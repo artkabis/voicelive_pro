@@ -299,6 +299,9 @@ MainComponent::MainComponent() {
     juce::Logger::setCurrentLogger(&appLogger_);
     juce::Logger::writeToLog("VoiceLive Pro demarre");
 
+    headphoneMonitor_.attach(deviceManager);
+    contentPane_.addAndMakeVisible(headphoneLed_);
+
     viewport_.setScrollBarsShown(true, false);
     viewport_.setViewedComponent(&contentPane_, false);
     addAndMakeVisible(viewport_);
@@ -472,6 +475,7 @@ MainComponent::MainComponent() {
 
 MainComponent::~MainComponent() {
     stopTimer();
+    headphoneMonitor_.detach(deviceManager);  // avant shutdownAudio pour eviter callbacks tardifs
     shutdownAudio();
     juce::Logger::setCurrentLogger(nullptr);
 }
@@ -721,8 +725,9 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
 
     engine_.process(monoOut, monoIn);
 
-    // Couper le haut-parleur pendant l'enregistrement pour eviter le larsen.
-    if (anyTrackRecording_.load(std::memory_order_acquire)) {
+    // Anti-larsen : couper le haut-parleur pendant l'enregistrement SAUF si un
+    // casque est detecte (casque = pas de reinjection micro, monitoring OK).
+    if (anyTrackRecording_.load(std::memory_order_acquire) && !headphoneMonitor_.isConnected()) {
         std::fill(monoOut.begin(), monoOut.end(), 0.0F);
     }
 
@@ -736,6 +741,9 @@ void MainComponent::releaseResources() {}
 void MainComponent::timerCallback() {
     if (analysis_.empty())
         return;
+
+    // Mise a jour de la LED casque (l'atomic est lu ici sur le thread UI).
+    headphoneLed_.setConnected(headphoneMonitor_.isConnected());
 
     checkPendingEdit();
 
@@ -773,8 +781,17 @@ void MainComponent::updateDiagnostics() {
     text << "VoiceLive Pro v2.0.0  |  JUCE " << juce::SystemStats::getJUCEVersion() << "\n";
     text << "Build : " << __DATE__ << " " << __TIME__ << "\n";
 
+    const bool headphones = headphoneMonitor_.isConnected();
+    text << "Casque : "
+         << (headphones ? "DETECTE (monitoring actif)" : "NON detecte (speaker coupe pendant rec)")
+         << "\n";
+
     if (anyTrackRecording_.load(std::memory_order_relaxed)) {
-        text << "[REC EN COURS] Speaker coupe - utiliser des ecouteurs pour le retour\n";
+        if (headphones) {
+            text << "[REC EN COURS] Monitoring casque actif\n";
+        } else {
+            text << "[REC EN COURS] Speaker coupe - brancher un casque USB-C pour le retour\n";
+        }
     }
     if (pendingEdit_) {
         text << "[EDIT EN ATTENTE] piste " << static_cast<int>(pendingEdit_->trackIndex + 1)
@@ -859,7 +876,12 @@ void MainComponent::resized() {
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
 
-    titleLabel_.setBounds(area.removeFromTop(kTitleH));
+    // Titre : [label] [LED casque 26px]
+    {
+        auto row = area.removeFromTop(kTitleH);
+        headphoneLed_.setBounds(row.removeFromRight(26).reduced(3));
+        titleLabel_.setBounds(row);
+    }
     area.removeFromTop(kGap / 2);
 
     // Accordeur : [toggle] [label]

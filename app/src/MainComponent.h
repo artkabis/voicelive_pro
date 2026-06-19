@@ -25,6 +25,7 @@
 #include <span>
 #include <vector>
 
+#include "HeadphoneMonitor.h"
 #include "voicelive/dsp/Chorus.hpp"
 #include "voicelive/dsp/Delay.hpp"
 #include "voicelive/dsp/Equalizer.hpp"
@@ -149,6 +150,9 @@ private:
 
     voicelive::engine::LooperEngine engine_;
     voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possede par masterChain_
+
+    voicelive::app::HeadphoneMonitor headphoneMonitor_;
+    voicelive::app::HeadphoneLed headphoneLed_;
 
     std::vector<float> monoIn_;
     std::vector<float> monoOut_;
