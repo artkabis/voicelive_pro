@@ -52,6 +52,8 @@
             file="engine/src/Metronome.cpp"/>
       <FILE id="engWav" name="WavFile.cpp" compile="1" resource="0"
             file="engine/src/WavFile.cpp"/>
+      <FILE id="engDevHint" name="AudioDeviceHint.cpp" compile="1" resource="0"
+            file="engine/src/AudioDeviceHint.cpp"/>
     </GROUP>
   </MAINGROUP>
   <JUCEOPTIONS JUCE_WEB_BROWSER="0" JUCE_USE_CURL="0" JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
