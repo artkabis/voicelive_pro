@@ -12,6 +12,10 @@
             file="app/src/MainComponent.cpp"/>
       <FILE id="appMain" name="Main.cpp" compile="1" resource="0"
             file="app/src/Main.cpp"/>
+      <FILE id="appHpH" name="HeadphoneMonitor.h" compile="0" resource="0"
+            file="app/src/HeadphoneMonitor.h"/>
+      <FILE id="appHpC" name="HeadphoneMonitor.cpp" compile="1" resource="0"
+            file="app/src/HeadphoneMonitor.cpp"/>
     </GROUP>
     <GROUP id="grpCore" name="core">
       <FILE id="coreLoop" name="LooperTrack.cpp" compile="1" resource="0"
