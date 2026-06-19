@@ -50,7 +50,7 @@ namespace {
 //   TYPE_USB_DEVICE       = 11 (generic USB audio, e.g. USB-C DAC)
 //   TYPE_USB_ACCESSORY    = 12 (USB accessory mode)
 bool androidHasHeadsetOutput() noexcept {
-    JNIEnv* env = getEnv();
+    JNIEnv* env = juce::getEnv();
     if (env == nullptr) {
         return false;
     }
