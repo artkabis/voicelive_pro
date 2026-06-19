@@ -66,6 +66,7 @@
         <CONFIGURATION name="Debug" isDebug="1" optimisation="1"
                        headerPath="../../core/include&#10;../../dsp/include&#10;../../engine/include"/>
         <CONFIGURATION name="Release" isDebug="0" optimisation="3"
+                       cppFlags="-ffast-math -ftree-vectorize"
                        headerPath="../../core/include&#10;../../dsp/include&#10;../../engine/include"/>
       </CONFIGURATIONS>
       <MODULEPATHS>

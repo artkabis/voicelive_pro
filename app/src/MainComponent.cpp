@@ -470,6 +470,19 @@ MainComponent::MainComponent() {
     analysis_.assign(kAnalysisSize, 0.0F);
     setSize(400, 800);
     setAudioChannels(2, 2);
+
+#if JUCE_ANDROID
+    // Request a small buffer to engage AAudio low-latency path (~5 ms at 48 kHz).
+    // Only applied when the default buffer is larger to avoid a needless device restart.
+    {
+        auto setup = deviceManager.getAudioDeviceSetup();
+        if (setup.bufferSize > 256) {
+            setup.bufferSize = 256;
+            deviceManager.setAudioDeviceSetup(setup, true);
+        }
+    }
+#endif
+
     startTimerHz(10);
 }
 

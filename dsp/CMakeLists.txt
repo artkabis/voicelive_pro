@@ -21,6 +21,15 @@ target_compile_features(voicelive_dsp PUBLIC cxx_std_20)
 voicelive_set_target_warnings(voicelive_dsp)
 voicelive_enable_sanitizers(voicelive_dsp)
 
+# Android ARM optimizations (CMake cross-compilation path).
+if(ANDROID)
+    if(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+        target_compile_options(voicelive_dsp PRIVATE -mfpu=neon -mfloat-abi=softfp -ffast-math -ftree-vectorize)
+    elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+        target_compile_options(voicelive_dsp PRIVATE -march=armv8-a -ffast-math -ftree-vectorize)
+    endif()
+endif()
+
 if(VOICELIVE_BUILD_TESTS)
     add_executable(dsp_tests
         tests/test_main.cpp
