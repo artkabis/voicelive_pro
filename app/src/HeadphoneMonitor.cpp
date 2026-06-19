@@ -26,9 +26,9 @@ void HeadphoneLed::paint(juce::Graphics& g) {
     g.drawEllipse(bounds.reduced(1.0F), 1.5F);
     // Reflet blanc en haut a gauche
     g.setColour(juce::Colours::white.withAlpha(0.25F));
-    g.fillEllipse(bounds.removeFromLeft(bounds.getWidth() * 0.5F)
-                      .removeFromTop(bounds.getHeight() * 0.5F)
-                      .reduced(2.0F));
+    g.fillEllipse(bounds.withWidth(bounds.getWidth() * 0.5F)
+                        .withHeight(bounds.getHeight() * 0.5F)
+                        .reduced(2.0F));
 }
 
 // ─── HeadphoneMonitor ─────────────────────────────────────────────────────────
