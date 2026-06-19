@@ -123,6 +123,11 @@ private:
     void applyTrackEdit(std::size_t index, std::vector<float> newSamples);
     void checkPendingEdit();
 
+    // --- Mix Master (piste de rendu editable) --------------------------------
+    void renderMixToTrack();
+    void cutMixSelection();
+    void trimMixSelection();
+
     // --- Export / Sauvegarde -------------------------------------------------
     void exportMix();
     void exportTrack(std::size_t index);
@@ -192,8 +197,16 @@ private:
 
     SpectrumView spectrumView_;
 
+    // Mix Master : piste de rendu editable (UI-thread only, jamais sur l'audio thread).
+    voicelive::engine::LoopAudio mixTrackAudio_;
+    TrackWaveform mixWaveform_;
+    juce::Label mixLabel_;
+    juce::TextButton renderMixBtn_;
+    juce::TextButton cutMixBtn_;
+    juce::TextButton trimMixBtn_;
+    juce::TextButton exportMixBtn_;  ///< Export mix depuis mixTrackAudio_.
+
     juce::Label ioLabel_;
-    juce::TextButton exportMixBtn_;
     juce::TextButton saveProjectBtn_;
     juce::TextButton loadProjectBtn_;
 

@@ -412,14 +412,34 @@ MainComponent::MainComponent() {
     // Spectre
     contentPane_.addAndMakeVisible(spectrumView_);
 
-    // I/O section
-    ioLabel_.setText("Export / Sauvegarde", juce::dontSendNotification);
-    ioLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
-    contentPane_.addAndMakeVisible(ioLabel_);
+    // Mix Master section
+    mixLabel_.setText("Mix Master", juce::dontSendNotification);
+    mixLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
+    contentPane_.addAndMakeVisible(mixLabel_);
+
+    renderMixBtn_.setButtonText("Render Mix");
+    renderMixBtn_.onClick = [this] { renderMixToTrack(); };
+    contentPane_.addAndMakeVisible(renderMixBtn_);
+
+    mixWaveform_.setAudio(&mixTrackAudio_);
+    contentPane_.addAndMakeVisible(mixWaveform_);
+
+    cutMixBtn_.setButtonText("Cut Sel");
+    cutMixBtn_.onClick = [this] { cutMixSelection(); };
+    contentPane_.addAndMakeVisible(cutMixBtn_);
+
+    trimMixBtn_.setButtonText("Trim Sel");
+    trimMixBtn_.onClick = [this] { trimMixSelection(); };
+    contentPane_.addAndMakeVisible(trimMixBtn_);
 
     exportMixBtn_.setButtonText("Export Mix WAV");
     exportMixBtn_.onClick = [this] { exportMix(); };
     contentPane_.addAndMakeVisible(exportMixBtn_);
+
+    // I/O section
+    ioLabel_.setText("Projet", juce::dontSendNotification);
+    ioLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
+    contentPane_.addAndMakeVisible(ioLabel_);
 
     saveProjectBtn_.setButtonText("Sauvegarder");
     saveProjectBtn_.onClick = [this] { saveProject(); };
@@ -741,6 +761,10 @@ void MainComponent::timerCallback() {
         waveforms_[i].repaint();
     }
 
+    if (mixTrackAudio_.length() > 0) {
+        mixWaveform_.repaint();
+    }
+
     updateDiagnostics();
 }
 
@@ -813,6 +837,9 @@ void MainComponent::resized() {
     constexpr int kEqLblH = 26;
     constexpr int kEqRowH = 44;
     constexpr int kSpecH = 90;
+    constexpr int kMixLblH = 26;
+    constexpr int kMixWaveH = 60;
+    constexpr int kMixEditH = 36;
     constexpr int kIoLblH = 26;
     constexpr int kIoRowH = 44;
     constexpr int kCopyH = 40;
@@ -825,8 +852,9 @@ void MainComponent::resized() {
     const int trackCount = static_cast<int>(kTrackCount);
     const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap +
                        trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
-                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kIoLblH + 4 + kIoRowH + 4 +
-                       kIoRowH + kGap + kCopyH + kGap / 2 + kDiagH + pad;
+                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kMixWaveH + 4 +
+                       kMixEditH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 +
+                       kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
@@ -937,11 +965,27 @@ void MainComponent::resized() {
     area.removeFromTop(kGap);
     spectrumView_.setBounds(area.removeFromTop(kSpecH));
 
-    // I/O section
+    // Mix Master section : [label] [Render Mix] / [waveform] / [Cut] [Trim] [Export]
+    area.removeFromTop(kGap);
+    {
+        auto row = area.removeFromTop(kMixLblH);
+        mixLabel_.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(2));
+        renderMixBtn_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    mixWaveform_.setBounds(area.removeFromTop(kMixWaveH));
+    area.removeFromTop(4);
+    {
+        auto editRow = area.removeFromTop(kMixEditH);
+        const int third = editRow.getWidth() / 3;
+        cutMixBtn_.setBounds(editRow.removeFromLeft(third).reduced(2));
+        trimMixBtn_.setBounds(editRow.removeFromLeft(third).reduced(2));
+        exportMixBtn_.setBounds(editRow.reduced(2));
+    }
+
+    // Projet section
     area.removeFromTop(kGap);
     ioLabel_.setBounds(area.removeFromTop(kIoLblH));
-    area.removeFromTop(4);
-    exportMixBtn_.setBounds(area.removeFromTop(kIoRowH).reduced(2));
     area.removeFromTop(4);
     {
         auto row = area.removeFromTop(kIoRowH);
@@ -1100,27 +1144,24 @@ void MainComponent::applyTrackEdit(std::size_t index, std::vector<float> newSamp
     }
 }
 
-// ─── Export / Sauvegarde ──────────────────────────────────────────────────────
+// ─── Mix Master ───────────────────────────────────────────────────────────────
 
-void MainComponent::exportMix() {
-    // Determine the longest included track to set mix duration.
+void MainComponent::renderMixToTrack() {
     std::size_t mixLen = 0;
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         if (!includeBtns_[i].getToggleState())
             continue;
-        if (const auto* proc = engine_.track(i); proc != nullptr) {
+        if (const auto* proc = engine_.track(i); proc != nullptr)
             mixLen = std::max(mixLen, proc->audio().loopLength());
-        }
     }
     if (mixLen == 0) {
         juce::AlertWindow::showMessageBoxAsync(
-            juce::AlertWindow::WarningIcon, "Export Mix",
-            "Aucune piste incluse dans le mix.\n"
+            juce::AlertWindow::WarningIcon, "Render Mix",
+            "Aucune piste incluse ou toutes vides.\n"
             "Activez le bouton MIX sur au moins une piste enregistree.");
         return;
     }
 
-    // Render mix locally: sum included, non-muted tracks using their gain sliders.
     std::vector<float> mixData(mixLen, 0.0F);
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         if (!includeBtns_[i].getToggleState())
@@ -1133,18 +1174,88 @@ void MainComponent::exportMix() {
         if (trackLen == 0 || strips_[i].muteButton.getToggleState())
             continue;
         const float gain = static_cast<float>(strips_[i].gainSlider.getValue());
-        for (std::size_t s = 0; s < mixLen; ++s) {
+        for (std::size_t s = 0; s < mixLen; ++s)
             mixData[s] += audio.sampleAt(s % trackLen) * gain;
-        }
     }
-    for (float& s : mixData) {
+    for (float& s : mixData)
         s = juce::jlimit(-1.0F, 1.0F, s);
+
+    mixTrackAudio_.prepare(mixLen);
+    mixTrackAudio_.append(std::span<const float>{mixData.data(), mixData.size()});
+    mixWaveform_.setAudio(&mixTrackAudio_);
+    mixWaveform_.clearSelection();
+    mixWaveform_.repaint();
+    juce::Logger::writeToLog("Mix rendu : " + juce::String(static_cast<int>(mixLen)) + " samples");
+}
+
+void MainComponent::cutMixSelection() {
+    if (!mixWaveform_.hasSelection()) {
+        juce::Logger::writeToLog("Cut mix : pas de selection");
+        return;
+    }
+    const std::size_t len = mixTrackAudio_.loopLength();
+    if (len == 0)
+        return;
+
+    auto [n0, n1] = mixWaveform_.selectionNormalized();
+    const std::size_t s0 = static_cast<std::size_t>(n0 * static_cast<float>(len));
+    const std::size_t s1 = static_cast<std::size_t>(n1 * static_cast<float>(len));
+
+    std::vector<float> edited;
+    edited.reserve(len - (s1 - s0));
+    for (std::size_t s = 0; s < s0; ++s)
+        edited.push_back(mixTrackAudio_.sampleAt(s));
+    for (std::size_t s = s1; s < len; ++s)
+        edited.push_back(mixTrackAudio_.sampleAt(s));
+
+    mixTrackAudio_.prepare(edited.size());
+    mixTrackAudio_.append(std::span<const float>{edited.data(), edited.size()});
+    mixWaveform_.clearSelection();
+    juce::Logger::writeToLog("Cut mix applique");
+}
+
+void MainComponent::trimMixSelection() {
+    if (!mixWaveform_.hasSelection()) {
+        juce::Logger::writeToLog("Trim mix : pas de selection");
+        return;
+    }
+    const std::size_t len = mixTrackAudio_.loopLength();
+    if (len == 0)
+        return;
+
+    auto [n0, n1] = mixWaveform_.selectionNormalized();
+    const std::size_t s0 = static_cast<std::size_t>(n0 * static_cast<float>(len));
+    const std::size_t s1 = static_cast<std::size_t>(n1 * static_cast<float>(len));
+
+    std::vector<float> edited;
+    edited.reserve(s1 - s0);
+    for (std::size_t s = s0; s < s1; ++s)
+        edited.push_back(mixTrackAudio_.sampleAt(s));
+
+    mixTrackAudio_.prepare(edited.size());
+    mixTrackAudio_.append(std::span<const float>{edited.data(), edited.size()});
+    mixWaveform_.clearSelection();
+    juce::Logger::writeToLog("Trim mix applique");
+}
+
+// ─── Export / Sauvegarde ──────────────────────────────────────────────────────
+
+void MainComponent::exportMix() {
+    const std::size_t len = mixTrackAudio_.loopLength();
+    if (len == 0) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "Export Mix",
+            "Le mix n'a pas encore ete rendu.\n"
+            "Appuyez d'abord sur [Render Mix], editez si besoin,\npuis exportez.");
+        return;
     }
 
     wav::AudioData data;
-    data.samples = std::move(mixData);
     data.sampleRate = static_cast<unsigned>(sampleRate_);
     data.channels = 1;
+    data.samples.resize(len);
+    for (std::size_t s = 0; s < len; ++s)
+        data.samples[s] = mixTrackAudio_.sampleAt(s);
 
     const juce::File dir =
         juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
