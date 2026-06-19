@@ -5,6 +5,16 @@
 
 #if JUCE_ANDROID
 #include <jni.h>
+
+// getEnv() is JUCE's accessor for the JNIEnv of the current thread. It is
+// declared in JUCE's internal native header (juce_android_JNIHelpers.h), which
+// is not pulled in by the public module umbrella headers. It has external
+// linkage and is compiled into the same shared object, so we forward-declare it
+// here at global scope (must NOT be nested inside voicelive::app, or it would
+// declare a distinct voicelive::app::juce::getEnv and shadow the real ::juce).
+namespace juce {
+JNIEnv* getEnv() noexcept;
+}  // namespace juce
 #endif
 
 namespace voicelive::app {
@@ -36,14 +46,6 @@ void HeadphoneLed::paint(juce::Graphics& g) {
 // ─── HeadphoneMonitor ─────────────────────────────────────────────────────────
 
 #if JUCE_ANDROID
-// getEnv() is JUCE's accessor for the JNIEnv of the current thread. It is
-// declared in JUCE's internal native header (juce_android_JNIHelpers.h), which
-// is not pulled in by the public module umbrella headers. It has external
-// linkage and is compiled into the same shared object, so we forward-declare it.
-namespace juce {
-JNIEnv* getEnv() noexcept;
-}  // namespace juce
-
 namespace {
 
 // Clears any pending Java exception so subsequent JNI calls are safe.
