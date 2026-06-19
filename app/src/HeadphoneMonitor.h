@@ -35,8 +35,13 @@ public:
     /// Lit l'etat courant (thread-safe, sans verrou).
     [[nodiscard]] bool isConnected() const noexcept;
 
-private:
+    /// Sonde l'etat courant et met a jour l'atomique.
+    /// A appeler depuis le thread UI (ex. timerCallback) pour couvrir les
+    /// evenements hotplug USB-C qu'Android ne remonte pas toujours au
+    /// ChangeListener de l'AudioDeviceManager.
     void poll(juce::AudioDeviceManager& mgr) noexcept;
+
+private:
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
 
     std::atomic<bool> connected_{false};

@@ -755,7 +755,9 @@ void MainComponent::timerCallback() {
     if (analysis_.empty())
         return;
 
-    // Mise a jour de la LED casque (l'atomic est lu ici sur le thread UI).
+    // Re-sonder le peripherique de sortie avant de lire l'etat : sur Android,
+    // le hotplug USB-C ne remonte pas toujours via AudioDeviceManager::ChangeListener.
+    headphoneMonitor_.poll(deviceManager);
     headphoneLed_.setConnected(headphoneMonitor_.isConnected());
 
     checkPendingEdit();
