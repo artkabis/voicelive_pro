@@ -36,7 +36,26 @@ void HeadphoneLed::paint(juce::Graphics& g) {
 // ─── HeadphoneMonitor ─────────────────────────────────────────────────────────
 
 #if JUCE_ANDROID
+// getEnv() is JUCE's accessor for the JNIEnv of the current thread. It is
+// declared in JUCE's internal native header (juce_android_JNIHelpers.h), which
+// is not pulled in by the public module umbrella headers. It has external
+// linkage and is compiled into the same shared object, so we forward-declare it.
+namespace juce {
+JNIEnv* getEnv() noexcept;
+}  // namespace juce
+
 namespace {
+
+// Clears any pending Java exception so subsequent JNI calls are safe.
+// Returns true if an exception was pending. JNI behaviour is undefined if any
+// call is made while an exception is pending, so we check after each Call*.
+bool clearPendingException(JNIEnv* env) noexcept {
+    if (env->ExceptionCheck() != JNI_FALSE) {
+        env->ExceptionClear();
+        return true;
+    }
+    return false;
+}
 
 // On Android, JUCE always reports "Android Audio" as device name regardless of
 // the physical output hardware — USB-C DAC, wired headset, etc. are all opaque.
@@ -58,16 +77,22 @@ bool androidHasHeadsetOutput() noexcept {
     // ActivityThread.currentApplication() — avoids needing an Activity reference.
     jclass atClass = env->FindClass("android/app/ActivityThread");
     if (atClass == nullptr) {
-        env->ExceptionClear();
+        clearPendingException(env);
         return false;
     }
     jmethodID currentApp = env->GetStaticMethodID(atClass, "currentApplication",
                                                    "()Landroid/app/Application;");
-    jobject appObj = (currentApp != nullptr)
-                         ? env->CallStaticObjectMethod(atClass, currentApp)
-                         : nullptr;
+    if (currentApp == nullptr) {
+        clearPendingException(env);
+        env->DeleteLocalRef(atClass);
+        return false;
+    }
+    jobject appObj = env->CallStaticObjectMethod(atClass, currentApp);
     env->DeleteLocalRef(atClass);
-    if (appObj == nullptr) {
+    if (clearPendingException(env) || appObj == nullptr) {
+        if (appObj != nullptr) {
+            env->DeleteLocalRef(appObj);
+        }
         return false;
     }
 
@@ -77,6 +102,7 @@ bool androidHasHeadsetOutput() noexcept {
                                             "(Ljava/lang/String;)Ljava/lang/Object;");
     env->DeleteLocalRef(ctxClass);
     if (getService == nullptr) {
+        clearPendingException(env);
         env->DeleteLocalRef(appObj);
         return false;
     }
@@ -84,7 +110,10 @@ bool androidHasHeadsetOutput() noexcept {
     jobject am = env->CallObjectMethod(appObj, getService, audioKey);
     env->DeleteLocalRef(audioKey);
     env->DeleteLocalRef(appObj);
-    if (am == nullptr) {
+    if (clearPendingException(env) || am == nullptr) {
+        if (am != nullptr) {
+            env->DeleteLocalRef(am);
+        }
         return false;
     }
 
@@ -94,12 +123,16 @@ bool androidHasHeadsetOutput() noexcept {
                                             "(I)[Landroid/media/AudioDeviceInfo;");
     env->DeleteLocalRef(amClass);
     if (getDevices == nullptr) {
+        clearPendingException(env);
         env->DeleteLocalRef(am);
         return false;
     }
     auto* devices = static_cast<jobjectArray>(env->CallObjectMethod(am, getDevices, (jint) 2));
     env->DeleteLocalRef(am);
-    if (devices == nullptr) {
+    if (clearPendingException(env) || devices == nullptr) {
+        if (devices != nullptr) {
+            env->DeleteLocalRef(devices);
+        }
         return false;
     }
 
@@ -121,6 +154,10 @@ bool androidHasHeadsetOutput() noexcept {
         env->DeleteLocalRef(devClass);
         if (getType != nullptr) {
             const jint t = env->CallIntMethod(dev, getType);
+            if (clearPendingException(env)) {
+                env->DeleteLocalRef(dev);
+                break;
+            }
             if (t == kWiredHeadset || t == kWiredHeadphones ||
                 t == kUsbHeadset  || t == kUsbDevice        || t == kUsbAccessory) {
                 found = true;
