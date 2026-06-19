@@ -103,8 +103,16 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 
 ### 🖥️ Application (`app`, JUCE)
 - **UI multipiste** : 3 pistes (Rec/Play/Stop/Clear + gain + mute) via la file
-  lock-free, **métronome + BPM**, **égaliseur de mastering** (3 bandes) et
-  **accordeur** (affichage note + cents rafraîchi par Timer).
+  lock-free, **formes d'onde éditables** (cut/trim), **chaîne d'effets par piste**
+  (REV/DLY/WAH/CHR), **métronome + BPM**, **égaliseur de mastering** (3 bandes),
+  **spectre temps réel**, **accordeur**, **rendu/export WAV** et
+  **sauvegarde/chargement de projet**.
+- **Détection casque & anti-larsen** : haut-parleur coupé pendant
+  l'enregistrement sauf si un casque est détecté (jack / USB-C). Sur Android, la
+  détection passe par `AudioManager.getDevices()` (JNI), JUCE ne remontant pas le
+  matériel réel. Voyant LED d'état dans l'UI.
+- **Basse latence Android** : buffer 256 frames (chemin AAudio rapide, ~5 ms à
+  48 kHz), Release `-O3 -ffast-math`.
 - Pipelines CI : **binaire desktop** et **APK Android (debug)** en artefacts.
 
 ### 🛡️ Robustesse transverse
@@ -183,7 +191,7 @@ cmake --build build --target VoiceLiveApp -j
 ### APK Android
 
 Généré par la CI ([`.github/workflows/android.yml`](.github/workflows/android.yml)) :
-**Actions → « Android APK » → artefact `VoiceLivePro-debug-apk`**, puis sideload.
+**Actions → « Android APK » → artefact `VoiceLivePro-r<run>-<sha>`**, puis sideload.
 Le build Android ne se fait pas en local sans NDK ; détails dans
 [`app/README.md`](app/README.md).
 
@@ -192,12 +200,15 @@ Le build Android ne se fait pas en local sans NDK ; détails dans
 ## 🗺️ Roadmap
 
 - [x] Pipeline APK Android : **APK debug signé, généré et téléchargeable** en
-      artefact CI (`VoiceLivePro-debug-apk`).
-- [ ] 3ᵉ effet (chorus / wah) + insertion d'effets pilotée en temps réel.
-- [ ] UI multipiste complète (niveaux, sélection d'effets).
-- [ ] Sauvegarde/chargement de projet (sérialisation de `core::Project`).
+      artefact CI.
+- [x] Effets **chorus / wah** + insertion d'effets pilotée par piste.
+- [x] **UI multipiste complète** (gain/mute, formes d'onde éditables, panneaux
+      d'effets, EQ de mastering, spectre, accordeur).
+- [x] **Sauvegarde/chargement de projet** (`core::project_io`) + export WAV.
+- [x] **Détection casque** (jack / USB-C via JNI Android) + anti-larsen.
+- [x] **Optimisation latence Android** (buffer 256, AAudio, `-O3 -ffast-math`).
 - [ ] Cible **web** (cœur en WebAssembly + AudioWorklet).
-- [ ] Signature release Android (Play Store).
+- [ ] Signature **release** Android (Play Store) + symboles natifs en artefact CI.
 
 ---
 
@@ -211,7 +222,7 @@ voicelive_pro/
 ├── app/         # application JUCE (desktop/mobile)
 ├── testing/     # micro-framework de test partagé
 ├── cmake/       # modules CMake (warnings, sanitizers)
-├── docs/        # ARCHITECTURE, CONVENTIONS, DEVLOG
+├── docs/        # ARCHITECTURE, CONVENTIONS, DEBUG_MOBILE, DEVLOG
 ├── .github/     # CI (cœur, desktop, Android)
 ├── scripts/     # check.sh (reproduit la CI en local)
 ├── VoiceLivePro.jucer  # projet Projucer (export Android)

@@ -14,6 +14,7 @@ rend visible, **sans aucun outil**, l'essentiel :
 ```
 VoiceLive Pro v2.0.0  |  JUCE 8.0.4
 Build : Jun 17 2026 09:40:11
+Casque : DETECTE (monitoring actif)
 Audio : Oboe  48000 Hz / buffer 192
 Moteur : 3 pistes, 1432 blocs, 0 cmd perdues, métronome OFF, master FX 1
   Piste 1 : Playing  gain 1.00
@@ -25,11 +26,19 @@ Moteur : 3 pistes, 1432 blocs, 0 cmd perdues, métronome OFF, master FX 1
 | Ce que tu vois | Interprétation |
 |---|---|
 | `Audio : NON DÉMARRÉ` | L'audio n'a pas démarré → **permission micro refusée** ou périphérique indisponible. C'est la cause n°1 de « rien ne marche ». |
+| `Casque : NON detecte` **avec casque branché** | Détection matérielle ratée → voir l'encart casque ci-dessous. Conséquence : **haut-parleur coupé pendant l'enregistrement** (anti-larsen). |
 | `Build :` ancien | Tu testes une **vieille version** (l'APK n'a pas été réinstallé). |
 | `blocs` qui n'augmente **pas** | Le callback audio ne tourne pas → audio non démarré / suspendu. |
 | `cmd perdues > 0` | La file de commandes sature (UI trop rapide / audio bloqué). |
 | Piste figée en `Recording` | Le `FinishRecording` n'est jamais arrivé (bug d'UI ou de flux). |
 | `gain 0.00` / `[MUTE]` | Piste muette → c'est « normal », pas un bug. |
+
+> **Casque non détecté (voyant rouge / pas de retour pendant l'enregistrement) ?**
+> Sur Android, la détection passe par `AudioManager.getDevices()` (JNI), pas par
+> le nom JUCE (toujours `"Android Audio"`). Si un casque branché n'est pas vu :
+> vérifier dans `adb logcat` qu'aucune exception Java n'est levée côté JNI, et que
+> le type matériel renvoyé fait bien partie de ceux reconnus (jack 3.5 mm, USB
+> headset, DAC USB-C). Voir `app/src/HeadphoneMonitor.cpp`.
 
 > Première chose à regarder quand « ça ne marche pas » : **la ligne `Audio :`**.
 
@@ -97,6 +106,17 @@ adb install -r VoiceLivePro-debug.apk
 6. Crash natif → symboliser avec `ndk-stack`.
 
 ---
+
+## Diagnostic CI (workflow Android)
+
+En cas d'échec du build APK, le workflow `android.yml` ne laisse plus l'erreur
+noyée dans la stacktrace Gradle :
+- l'erreur native réelle (`error:` / `FAILED:` / `undefined symbol` /
+  `ninja stopped`) est **ré-extraite seule** à la fin du log de l'étape ;
+- un artefact **`android-debug-logs`** est publié (log Gradle complet, logs
+  `.cxx`, manifeste, CMakeLists généré) — téléchargeable depuis l'onglet Actions ;
+- la liste des sources C++ du projet généré est affichée à chaque run (détecte un
+  `.cpp` absent du `.jucer` avant l'étape de lien).
 
 ## Améliorations CI prévues
 - Publier les **symboles natifs** (`.so` non strippés) en artefact pour

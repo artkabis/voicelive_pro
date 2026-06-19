@@ -5,6 +5,79 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-19 — Détection casque USB-C (Android), latence & durcissement CI
+
+### Contexte
+Sur Android, le voyant casque restait rouge et l'audio était coupé même avec un
+casque USB-C fonctionnel (anti-larsen : le haut-parleur est coupé pendant
+l'enregistrement *sauf* si un casque est détecté). Cause racine : **JUCE expose
+toujours `"Android Audio"`** comme nom de périphérique quel que soit le matériel
+physique branché — l'heuristique par chaîne (`engine::looksLikeHeadphones`) ne
+pouvait donc jamais matcher sur mobile.
+
+### Livré — détection casque
+- **`app/HeadphoneMonitor`** : sur Android, interroge directement
+  `AudioManager.getDevices(GET_DEVICES_OUTPUTS)` **via JNI** et cherche les types
+  matériels réels — `TYPE_WIRED_HEADSET(3)`, `TYPE_WIRED_HEADPHONES(4)`,
+  `TYPE_USB_HEADSET(8)`, `TYPE_USB_DEVICE(11)`, `TYPE_USB_ACCESSORY(12)`. Le
+  chemin desktop conserve l'heuristique `engine::looksLikeHeadphones` (USB /
+  headset / wired) sur le nom/type JUCE.
+- **Sondage au Timer** : `poll()` est appelé à chaque tick (10 Hz) en plus du
+  `ChangeListener`, car le hotplug USB-C n'est pas toujours notifié à
+  l'`AudioDeviceManager`. Le voyant passe au vert < 1 s après le branchement.
+- L'état est exposé via un `std::atomic<bool>` lu sans verrou dans
+  `getNextAudioBlock` (anti-larsen).
+
+### Livré — latence Android
+- **Buffer 256 frames** demandé sur Android après `setAudioChannels` pour engager
+  le chemin basse latence AAudio (~5 ms à 48 kHz), uniquement si le buffer par
+  défaut est plus grand (évite un redémarrage inutile du périphérique).
+- **Flags d'optimisation** : `.jucer` Release en `optimisation="3"` +
+  `cppFlags="-ffast-math -ftree-vectorize"` (c'est ce que l'APK utilise
+  réellement) ; blocs NEON/`-march=armv8-a` ajoutés dans `engine`/`dsp`
+  `CMakeLists.txt` pour le chemin de cross-compilation CMake-Android.
+
+### Durcissement JNI & audit mémoire
+- Audit fuites mémoire sur tout le dépôt : `core/`, `dsp/`, `engine/` et le GUI
+  sont **propres** (RAII, zéro allocation dans le callback audio, `Timer` arrêté
+  et `ChangeListener` retiré au destructeur, logger débranché). Le **seul** risque
+  était le code JNI nouvellement écrit.
+- Correctifs JNI : `clearPendingException()` après chaque `Call*Method` (tout
+  appel JNI avec une exception Java pendante est un comportement indéfini) et
+  `DeleteLocalRef` sur **toutes** les sorties (pas d'accumulation de références
+  locales si la boucle sur les périphériques lève).
+
+### Pièges rencontrés (à connaître)
+- **`.jucer` ≠ `CMakeLists.txt`** : un nouveau `app/src/*.cpp` doit être ajouté
+  **dans les deux** — `app/CMakeLists.txt` (desktop) **et** `VoiceLivePro.jucer`
+  (`grpApp`, build Android). Oublier le `.jucer` → erreur de **lien Android
+  uniquement** (`undefined symbol`), invisible sur desktop.
+- **`juce::getEnv()`** : déclaré dans un header natif interne de JUCE, non exposé
+  par les en-têtes publics. Forward-déclaré — mais **au scope global**, pas dans
+  `namespace voicelive::app` (sinon il crée un `voicelive::app::juce` qui masque
+  le vrai `::juce` et casse tout le fichier).
+- **`Rectangle::removeFromLeft`** est non-const : sur un `const Rectangle`, le NDK
+  (clang strict) refuse — utiliser `withWidth`/`withHeight`.
+
+### Durcissement CI (`.github/workflows/android.yml`)
+La vraie erreur clang/ninja était noyée dans ~150 lignes de stacktrace Gradle.
+Ajouté :
+- `tee` de la sortie Gradle dans `gradle-build.log` (pipefail conservé) ;
+- en cas d'échec, **extraction ciblée** des seuls signaux utiles
+  (`error:` / `FAILED:` / `undefined symbol` / `ninja stopped`) + queues des logs
+  `.cxx` ;
+- **artefact `android-debug-logs`** (log Gradle, logs `.cxx`, manifeste,
+  CMakeLists généré) téléchargeable sur échec ;
+- liste systématique des sources C++ référencées par le projet généré (détecte un
+  `.cpp` absent du `.jucer` avant le linker).
+
+### Vérifié
+- **CI (core)** : 8/8 verts (build, tests, ASan/UBSan, clang-tidy, clang-format).
+- **Android APK** : build complet vert, **APK publié** en artefact.
+- Détection casque/anti-larsen à confirmer sur appareil réel avec le nouvel APK.
+
+---
+
 ## 2026-06-16 — `core::Error` rendu RT-safe (caveat levé)
 
 ### Changement
