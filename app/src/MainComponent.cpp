@@ -372,6 +372,10 @@ MainComponent::MainComponent() {
         exportTrackBtns_[i].onClick = [this, i] { exportTrack(i); };
         contentPane_.addAndMakeVisible(exportTrackBtns_[i]);
 
+        bpmSyncBtns_[i].setButtonText("BPM");
+        bpmSyncBtns_[i].onClick = [this, i] { detectAndSyncBpm(i); };
+        contentPane_.addAndMakeVisible(bpmSyncBtns_[i]);
+
         includeBtns_[i].setButtonText("MIX");
         includeBtns_[i].setToggleState(true, juce::dontSendNotification);
         contentPane_.addAndMakeVisible(includeBtns_[i]);
@@ -1079,13 +1083,14 @@ void MainComponent::resized() {
             fxPanels_[i].chorusDepthSlider.setBounds(fxRow.reduced(2));
         }
 
-        // Rangee edition : [Cut Sel] [Trim Sel] [Export N]
+        // Rangee edition : [Cut Sel] [Trim Sel] [Export N] [BPM]
         {
             auto editRow = trackArea.removeFromTop(kEditRowH);
-            const int third = editRow.getWidth() / 3;
-            cutBtns_[i].setBounds(editRow.removeFromLeft(third).reduced(2));
-            trimBtns_[i].setBounds(editRow.removeFromLeft(third).reduced(2));
-            exportTrackBtns_[i].setBounds(editRow.reduced(2));
+            const int quarter = editRow.getWidth() / 4;
+            cutBtns_[i].setBounds(editRow.removeFromLeft(quarter).reduced(2));
+            trimBtns_[i].setBounds(editRow.removeFromLeft(quarter).reduced(2));
+            exportTrackBtns_[i].setBounds(editRow.removeFromLeft(quarter).reduced(2));
+            bpmSyncBtns_[i].setBounds(editRow.reduced(2));
         }
 
         area.removeFromTop(kGap / 2);
@@ -1193,6 +1198,66 @@ void MainComponent::postCommand(EngineCommand::Action action, std::size_t track,
     juce::Logger::writeToLog(juce::String("Clic piste ") +
                              juce::String(static_cast<int>(track) + 1) + " : " +
                              actionName(action) + (accepted ? "" : "  (FILE PLEINE)"));
+}
+
+// ─── Détection de BPM & synchronisation ──────────────────────────────────────
+
+void MainComponent::detectAndSyncBpm(std::size_t index) {
+    const auto* proc = engine_.track(index);
+    if (proc == nullptr) {
+        return;
+    }
+    const auto& audio = proc->audio();
+    const std::size_t len = audio.loopLength();
+    if (len == 0) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "BPM Sync",
+            "La piste " + juce::String(static_cast<int>(index) + 1) + " est vide.");
+        return;
+    }
+
+    // Copier les données audio pour l'analyse (ne pas bloquer le thread audio)
+    std::vector<float> buf(len);
+    for (std::size_t s = 0; s < len; ++s) {
+        buf[s] = audio.sampleAt(s);
+    }
+
+    // Configurer le détecteur avec la fréquence d'échantillonnage courante
+    voicelive::dsp::BpmDetector::Config cfg;
+    cfg.sampleRate = static_cast<unsigned>(sampleRate_);
+    const voicelive::dsp::BpmDetector det{cfg};
+
+    const auto detected = det.detect(buf);
+
+    if (!detected.has_value()) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "BPM Sync",
+            "Impossible de détecter le tempo de la piste " +
+                juce::String(static_cast<int>(index) + 1) +
+                ".\n\nCauses possibles :\n"
+                "• Piste trop courte (< 2 temps)\n"
+                "• Signal trop faible ou sans structure rythmique\n"
+                "• Contenu purement mélodique sans attaques marquées");
+        juce::Logger::writeToLog("BPM detect piste " +
+                                 juce::String(static_cast<int>(index) + 1) + " : echec");
+        return;
+    }
+
+    const float bpm = *detected;
+    const juce::String msg =
+        "Tempo détecté sur la piste " + juce::String(static_cast<int>(index) + 1) +
+        " : " + juce::String(bpm, 1) + " BPM\n\n"
+        "Appliquer ce tempo au transport ?";
+
+    juce::AlertWindow::showOkCancelBox(
+        juce::AlertWindow::QuestionIcon, "BPM Sync", msg, "Appliquer", "Annuler", nullptr,
+        juce::ModalCallbackFunction::create([this, bpm](int result) {
+            if (result == 1) {
+                const double clamped = juce::jlimit(40.0, 240.0, static_cast<double>(bpm));
+                bpmSlider_.setValue(clamped, juce::sendNotificationSync);
+                juce::Logger::writeToLog("BPM sync applique : " + juce::String(clamped, 1));
+            }
+        }));
 }
 
 // ─── Edition de piste ─────────────────────────────────────────────────────────

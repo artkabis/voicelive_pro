@@ -10,6 +10,7 @@ add_library(voicelive_dsp
     src/PitchDetector.cpp
     src/Compressor.cpp
     src/Equalizer.cpp
+    src/BpmDetector.cpp
 )
 add_library(voicelive::dsp ALIAS voicelive_dsp)
 
@@ -41,6 +42,7 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_pitch_detector.cpp
         tests/test_compressor.cpp
         tests/test_equalizer.cpp
+        tests/test_bpm_detector.cpp
     )
     target_link_libraries(dsp_tests PRIVATE voicelive::dsp voicelive::testing)
 

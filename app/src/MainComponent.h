@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "HeadphoneMonitor.h"
+#include "voicelive/dsp/BpmDetector.hpp"
 #include "voicelive/dsp/Chorus.hpp"
 #include "voicelive/dsp/Delay.hpp"
 #include "voicelive/dsp/Equalizer.hpp"
@@ -201,6 +202,10 @@ private:
     std::array<juce::TextButton, kTrackCount> trimBtns_;
     std::array<juce::TextButton, kTrackCount> exportTrackBtns_;
     std::array<juce::ToggleButton, kTrackCount> includeBtns_;  ///< Include track in mix export.
+    std::array<juce::TextButton, kTrackCount> bpmSyncBtns_;
+
+    voicelive::dsp::BpmDetector bpmDetector_;
+    void detectAndSyncBpm(std::size_t trackIndex);
 
     juce::ToggleButton metronomeButton_;
     juce::Slider bpmSlider_;
