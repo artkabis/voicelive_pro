@@ -21,8 +21,9 @@ std::vector<float> makeClickTrack(float bpm, float durationSec, unsigned sr = 48
     const float samplesPerBeat = 60.0F / bpm * static_cast<float>(sr);
     for (std::size_t beat = 0;; ++beat) {
         const auto pos = static_cast<std::size_t>(static_cast<float>(beat) * samplesPerBeat);
-        if (pos >= N)
+        if (pos >= N) {
             break;
+        }
         buf[pos] = 1.0F;
     }
     return buf;
