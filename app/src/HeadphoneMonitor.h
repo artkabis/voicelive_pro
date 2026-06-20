@@ -10,6 +10,7 @@
 #include <juce_audio_utils/juce_audio_utils.h>
 
 #include <atomic>
+#include <cstdint>
 
 namespace voicelive::app {
 
@@ -58,7 +59,8 @@ private:
     //            3=pas d'AudioManager, 4=getDevices null/exception.
     std::atomic<int> diagJniCode_{0};
     std::atomic<int> diagOutputCount_{0};  // nb de peripheriques de sortie vus
-    std::atomic<int> diagFirstType_{-1};   // 1er type AudioDeviceInfo rencontre
+    // Packed: bits[3:0]=count, bits[9:4]=type[0], bits[15:10]=type[1], ..., 6 bits/type, max 10.
+    std::atomic<std::int64_t> diagAllTypes_{0};
     std::atomic<int> diagFoundType_{-1};   // type qui a declenche found=true, -1 si absent
 };
 

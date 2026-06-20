@@ -4,6 +4,8 @@
 #include "voicelive/engine/AudioDeviceHint.hpp"
 
 #if JUCE_ANDROID
+#include <array>
+#include <cstdint>
 #include <jni.h>
 
 // getEnv() is JUCE's accessor for the JNIEnv of the current thread. It is
@@ -65,8 +67,12 @@ struct HeadsetScan {
     int jniCode = 0;      // 0=ok scanne, 1=pas de JNIEnv, 2=pas de contexte app,
                           // 3=pas d'AudioManager, 4=getDevices null/exception
     int outputCount = 0;  // nb de peripheriques de sortie enumeres
-    int firstType = -1;   // 1er type AudioDeviceInfo rencontre (sinon -1)
     int foundType = -1;   // type qui a declenche found=true (-1 si aucun detecte)
+
+    // Tous les types rencontres (jusqu'a kMaxTypes) pour diagnostic complet.
+    static constexpr int kMaxTypes = 12;
+    std::array<int, kMaxTypes> allTypes{};
+    int typeCount = 0;
 };
 
 // On Android, JUCE always reports "Android Audio" as device name regardless of
@@ -165,7 +171,7 @@ HeadsetScan scanAndroidOutputs() noexcept {
     constexpr jint kBluetoothA2dp = 8;
     constexpr jint kUsbDevice = 11;
     constexpr jint kUsbAccessory = 12;
-    constexpr jint kAuxLine = 21;  // adaptateur USB-C vers jack signale comme AUX
+    constexpr jint kAuxLine = 19;   // TYPE_AUX_LINE = 19 (adaptateur USB-C vers jack)
     constexpr jint kUsbHeadset = 22;
     constexpr jint kBleHeadset = 26;
     constexpr jint kBleSpeaker = 27;
@@ -186,8 +192,8 @@ HeadsetScan scanAndroidOutputs() noexcept {
                 env->DeleteLocalRef(dev);
                 break;
             }
-            if (scan.firstType < 0) {
-                scan.firstType = static_cast<int>(t);
+            if (scan.typeCount < HeadsetScan::kMaxTypes) {
+                scan.allTypes[static_cast<std::size_t>(scan.typeCount++)] = static_cast<int>(t);
             }
             if (!scan.found && (t == kWiredHeadset || t == kWiredHeadphones || t == kUsbHeadset ||
                                 t == kUsbDevice || t == kUsbAccessory || t == kAuxLine ||
@@ -226,8 +232,16 @@ void HeadphoneMonitor::poll(juce::AudioDeviceManager& mgr) noexcept {
     diagStatus_.store(2, std::memory_order_relaxed);
     diagJniCode_.store(scan.jniCode, std::memory_order_relaxed);
     diagOutputCount_.store(scan.outputCount, std::memory_order_relaxed);
-    diagFirstType_.store(scan.firstType, std::memory_order_relaxed);
     diagFoundType_.store(scan.foundType, std::memory_order_relaxed);
+    // Pack all device types into a single int64: low 4 bits = count, then 6 bits per type (max 10)
+    {
+        std::int64_t packed = static_cast<std::int64_t>(scan.typeCount) & 0xF;
+        for (int i = 0; i < scan.typeCount && i < 10; ++i) {
+            packed |= (static_cast<std::int64_t>(scan.allTypes[static_cast<std::size_t>(i)]) & 0x3F)
+                      << (4 + i * 6);
+        }
+        diagAllTypes_.store(packed, std::memory_order_relaxed);
+    }
     connected_.store(scan.found, std::memory_order_release);
     (void)mgr;
 #else
@@ -282,9 +296,17 @@ juce::String HeadphoneMonitor::diagnostic() const {
             break;
     }
     const int foundType = diagFoundType_.load(std::memory_order_relaxed);
+    const std::int64_t packed = diagAllTypes_.load(std::memory_order_relaxed);
+    const int typeCount = static_cast<int>(packed & 0xF);
+    juce::String typesStr = "types=[";
+    for (int i = 0; i < typeCount; ++i) {
+        if (i > 0) typesStr += ",";
+        typesStr += juce::String(static_cast<int>((packed >> (4 + i * 6)) & 0x3F));
+    }
+    typesStr += "]";
     return juce::String("casque JNI: ") + codeText +
            ", sorties=" + juce::String(diagOutputCount_.load(std::memory_order_relaxed)) +
-           ", type1=" + juce::String(diagFirstType_.load(std::memory_order_relaxed)) +
+           ", " + typesStr +
            (foundType >= 0 ? (", found_type=" + juce::String(foundType)) : ", not_found");
 }
 
