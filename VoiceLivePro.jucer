@@ -44,6 +44,8 @@
             file="dsp/src/Compressor.cpp"/>
       <FILE id="dspEq" name="Equalizer.cpp" compile="1" resource="0"
             file="dsp/src/Equalizer.cpp"/>
+      <FILE id="dspBpm" name="BpmDetector.cpp" compile="1" resource="0"
+            file="dsp/src/BpmDetector.cpp"/>
     </GROUP>
     <GROUP id="grpEngine" name="engine">
       <FILE id="engMixer" name="Mixer.cpp" compile="1" resource="0"

@@ -2,12 +2,11 @@
 // Tests unitaires pour dsp::BpmDetector.
 // Stratégie : pistes de clics synthétiques (impulsions aux positions de temps
 // exactes) → résultat déterministe et indépendant de données audio réelles.
-#include "voicelive/dsp/BpmDetector.hpp"
-
 #include <cmath>
 #include <cstddef>
 #include <vector>
 
+#include "voicelive/dsp/BpmDetector.hpp"
 #include "voicelive_testing/testing.hpp"
 
 using voicelive::dsp::BpmDetector;
@@ -16,13 +15,15 @@ namespace {
 
 // Génère une piste de clics à `bpm` battements/min.
 // Chaque temps = impulsion d'amplitude 1.0 à la position exacte (arrondie).
-std::vector<float> makeClickTrack(float bpm, float durationSec,
-                                   unsigned sr = 48000) {
+std::vector<float> makeClickTrack(float bpm, float durationSec, unsigned sr = 48000) {
     const auto N = static_cast<std::size_t>(durationSec * static_cast<float>(sr));
     std::vector<float> buf(N, 0.0F);
     const float samplesPerBeat = 60.0F / bpm * static_cast<float>(sr);
-    for (float pos = 0.0F; pos < static_cast<float>(N); pos += samplesPerBeat) {
-        buf[static_cast<std::size_t>(pos)] = 1.0F;
+    for (std::size_t beat = 0;; ++beat) {
+        const auto pos = static_cast<std::size_t>(static_cast<float>(beat) * samplesPerBeat);
+        if (pos >= N)
+            break;
+        buf[pos] = 1.0F;
     }
     return buf;
 }
@@ -34,8 +35,8 @@ std::vector<float> makeNoise(std::size_t n, float amplitude) {
     for (float& s : buf) {
         state = state * 1664525U + 1013904223U;
         // Convertir en [-1, 1] puis amplifier
-        const float v = static_cast<float>(static_cast<int>(state >> 1)) /
-                        static_cast<float>(0x40000000);
+        const float v =
+            static_cast<float>(static_cast<int>(state >> 1)) / static_cast<float>(0x40000000);
         s = v * amplitude;
     }
     return buf;
@@ -49,7 +50,7 @@ constexpr float kBpmTol = 5.0F;  // tolérance ±5 BPM admise
 
 TEST(BpmDetector, silence_returns_nullopt) {
     BpmDetector det;
-    std::vector<float> silence(48000 * 5, 0.0F);
+    std::vector<float> silence(std::size_t{48000} * 5, 0.0F);
     REQUIRE(!det.detect(silence).has_value());
 }
 
@@ -63,7 +64,7 @@ TEST(BpmDetector, too_short_returns_nullopt) {
 TEST(BpmDetector, noise_floor_returns_nullopt) {
     BpmDetector det;
     // Bruit très faible, sous le plancher minRms par défaut (1e-4)
-    const auto noise = makeNoise(48000 * 8, 1e-5F);
+    const auto noise = makeNoise(std::size_t{48000} * 8, 1e-5F);
     REQUIRE(!det.detect(noise).has_value());
 }
 
@@ -155,7 +156,9 @@ TEST(BpmDetector, custom_bpm_range_200_bpm) {
     const auto bpm = det.detect(click);
     REQUIRE(bpm.has_value());
     // À 200 BPM, la correction d'octave peut ramener à 100 BPM — tolérer les deux
-    CHECK(std::abs(*bpm - 200.0F) < kBpmTol || std::abs(*bpm - 100.0F) < kBpmTol);
+    const bool nearExpected =
+        std::abs(*bpm - 200.0F) < kBpmTol || std::abs(*bpm - 100.0F) < kBpmTol;
+    CHECK(nearExpected);
 }
 
 // ─── phaseOffset ──────────────────────────────────────────────────────────────

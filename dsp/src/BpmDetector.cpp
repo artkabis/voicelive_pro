@@ -3,6 +3,10 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
+#include <optional>
+#include <span>
+#include <vector>
 
 namespace voicelive::dsp {
 
@@ -11,9 +15,8 @@ BpmDetector::BpmDetector(Config cfg) noexcept : cfg_(cfg) {}
 
 // ─── helpers privés ───────────────────────────────────────────────────────────
 
-void BpmDetector::computeOdf(std::span<const float> audio,
-                              std::vector<float>&    odf) const noexcept {
-    const auto hop      = static_cast<std::size_t>(cfg_.hopSize);
+void BpmDetector::computeOdf(std::span<const float> audio, std::vector<float>& odf) const noexcept {
+    const auto hop = static_cast<std::size_t>(cfg_.hopSize);
     const auto numFrame = audio.size() / hop;
     odf.assign(numFrame, 0.0F);
 
@@ -26,12 +29,12 @@ void BpmDetector::computeOdf(std::span<const float> audio,
         }
         const float rms = std::sqrt(sumSq / static_cast<float>(hop));
         // Flux d'énergie semi-redressé (ne garde que les montées)
-        odf[f]  = std::max(0.0F, rms - prevRms);
+        odf[f] = std::max(0.0F, rms - prevRms);
         prevRms = rms;
     }
 }
 
-float BpmDetector::acf(std::span<const float> odf, int lag) const noexcept {
+float BpmDetector::acf(std::span<const float> odf, int lag) noexcept {
     const auto n = static_cast<int>(odf.size());
     if (lag < 0 || lag >= n) {
         return 0.0F;
@@ -40,7 +43,7 @@ float BpmDetector::acf(std::span<const float> odf, int lag) const noexcept {
     float sum = 0.0F;
     for (int i = 0; i < count; ++i) {
         sum += odf[static_cast<std::size_t>(i)] *
-               odf[static_cast<std::size_t>(i + lag)];
+               odf[static_cast<std::size_t>(i) + static_cast<std::size_t>(lag)];
     }
     // Normalisation par le nombre de paires pour comparer des lags différents
     return sum / static_cast<float>(count);
@@ -50,15 +53,15 @@ float BpmDetector::acf(std::span<const float> odf, int lag) const noexcept {
 
 std::optional<float> BpmDetector::detect(std::span<const float> audio) const noexcept {
     // Durée minimale : 2 temps complets au tempo le plus lent recherché
-    const auto minSamples = static_cast<std::size_t>(
-        2.0F * 60.0F / cfg_.minBpm * static_cast<float>(cfg_.sampleRate));
+    const auto minSamples =
+        static_cast<std::size_t>(2.0F * 60.0F / cfg_.minBpm * static_cast<float>(cfg_.sampleRate));
     if (audio.size() < minSamples) {
         return std::nullopt;
     }
 
     // Vérification du plancher de signal
     float sumSq = 0.0F;
-    for (float s : audio) {
+    for (const float s : audio) {
         sumSq += s * s;
     }
     if (std::sqrt(sumSq / static_cast<float>(audio.size())) < cfg_.minRms) {
@@ -76,7 +79,7 @@ std::optional<float> BpmDetector::detect(std::span<const float> audio) const noe
     }
 
     // Bornes de recherche (en trames ODF)
-    const auto sr  = static_cast<float>(cfg_.sampleRate);
+    const auto sr = static_cast<float>(cfg_.sampleRate);
     const auto hop = static_cast<float>(cfg_.hopSize);
     const int lagMin = static_cast<int>(std::ceil(60.0F / cfg_.maxBpm * sr / hop));
     const int lagMax = static_cast<int>(std::floor(60.0F / cfg_.minBpm * sr / hop));
@@ -86,13 +89,13 @@ std::optional<float> BpmDetector::detect(std::span<const float> audio) const noe
     }
 
     // Recherche du pic d'ACF dominant dans la plage de périodes de battement
-    int   bestLag   = lagMin;
+    int bestLag = lagMin;
     float bestScore = -1.0F;
     for (int lag = lagMin; lag <= lagMax; ++lag) {
         const float a = acf(odf, lag) / e0;
         if (a > bestScore) {
             bestScore = a;
-            bestLag   = lag;
+            bestLag = lag;
         }
     }
 
@@ -107,7 +110,7 @@ std::optional<float> BpmDetector::detect(std::span<const float> audio) const noe
     // Préférer un candidat dans la plage 80–160 BPM si son score ACF est
     // comparable (≥ 95 % du meilleur score) — corrige les erreurs d'octave
     // fréquentes quand le pattern a de forts accents sur le 1 et le 3.
-    float finalBpm   = rawBpm;
+    float finalBpm = rawBpm;
     float finalScore = bestScore;
 
     for (const float mult : {2.0F, 0.5F, 1.5F, 1.0F / 1.5F}) {
@@ -120,11 +123,11 @@ std::optional<float> BpmDetector::detect(std::span<const float> audio) const noe
             continue;
         }
         const float cScore = acf(odf, cLag) / e0;
-        const bool  inPreferred = (cand >= 80.0F && cand <= 160.0F);
+        const bool inPreferred = (cand >= 80.0F && cand <= 160.0F);
         // Adopter le candidat si : il est dans la plage préférée ET son score
         // ACF est presque aussi bon (≥ 95 % du meilleur trouvé jusqu'ici)
         if (inPreferred && cScore >= finalScore * 0.95F) {
-            finalBpm   = cand;
+            finalBpm = cand;
             finalScore = cScore;
         }
     }
@@ -132,9 +135,8 @@ std::optional<float> BpmDetector::detect(std::span<const float> audio) const noe
     return finalBpm;
 }
 
-std::optional<int>
-BpmDetector::phaseOffset(std::span<const float> audioA,
-                         std::span<const float> audioB) const noexcept {
+std::optional<int> BpmDetector::phaseOffset(std::span<const float> audioA,
+                                            std::span<const float> audioB) const noexcept {
     const auto bpmA = detect(audioA);
     const auto bpmB = detect(audioB);
     if (!bpmA || !bpmB) {
@@ -150,10 +152,9 @@ BpmDetector::phaseOffset(std::span<const float> audioA,
     computeOdf(audioA, odfA);
     computeOdf(audioB, odfB);
 
-    const auto sr  = static_cast<float>(cfg_.sampleRate);
+    const auto sr = static_cast<float>(cfg_.sampleRate);
     const auto hop = static_cast<float>(cfg_.hopSize);
-    const int beatLag = static_cast<int>(
-        std::round(60.0F / *bpmA * sr / hop));
+    const int beatLag = static_cast<int>(std::round(60.0F / *bpmA * sr / hop));
     if (beatLag < 1) {
         return std::nullopt;
     }
@@ -163,13 +164,13 @@ BpmDetector::phaseOffset(std::span<const float> audioA,
     const int maxShift = std::min(beatLag, n - 1);
 
     float bestXcf = -1.0F;
-    int   bestOff = 0;
+    int bestOff = 0;
     for (int d = 0; d <= maxShift; ++d) {
         const int count = n - d;
         float xcf = 0.0F;
         for (int i = 0; i < count; ++i) {
             xcf += odfA[static_cast<std::size_t>(i)] *
-                   odfB[static_cast<std::size_t>(i + d)];
+                   odfB[static_cast<std::size_t>(i) + static_cast<std::size_t>(d)];
         }
         xcf /= static_cast<float>(count);
         if (xcf > bestXcf) {

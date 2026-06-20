@@ -30,10 +30,10 @@ class BpmDetector {
 public:
     struct Config {
         unsigned sampleRate = 48000;
-        int      hopSize    = 512;    ///< échantillons par trame ODF (~10.7 ms @ 48 kHz)
-        float    minBpm     = 60.0F;
-        float    maxBpm     = 200.0F;
-        float    minRms     = 1e-4F;  ///< plancher de signal (en dessous → nullopt)
+        int hopSize = 512;  ///< échantillons par trame ODF (~10.7 ms @ 48 kHz)
+        float minBpm = 60.0F;
+        float maxBpm = 200.0F;
+        float minRms = 1e-4F;  ///< plancher de signal (en dessous → nullopt)
     };
 
     BpmDetector() noexcept;                     ///< configuration par défaut
@@ -43,28 +43,24 @@ public:
     ///   – l'audio est plus court que 2 temps à minBpm,
     ///   – le signal est sous le plancher de bruit,
     ///   – aucune structure périodique claire n'est trouvée.
-    [[nodiscard]] std::optional<float>
-    detect(std::span<const float> audio) const noexcept;
+    [[nodiscard]] std::optional<float> detect(std::span<const float> audio) const noexcept;
 
     /// Retourne le décalage de phase (en échantillons) qui aligne au mieux
     /// la grille rythmique de audioB sur celle de audioA, sur une période de
     /// battement. Utilise la corrélation croisée des ODFs.
     /// Retourne nullopt si l'un des deux pistes ne contient pas de tempo détectable
     /// ou si leurs tempos divergent de plus de 5 %.
-    [[nodiscard]] std::optional<int>
-    phaseOffset(std::span<const float> audioA,
-                std::span<const float> audioB) const noexcept;
+    [[nodiscard]] std::optional<int> phaseOffset(std::span<const float> audioA,
+                                                 std::span<const float> audioB) const noexcept;
 
 private:
     Config cfg_;
 
     /// Remplit `odf` avec la fonction d'onset RMS semi-redressée.
-    void computeOdf(std::span<const float> audio,
-                    std::vector<float>&    odf) const noexcept;
+    void computeOdf(std::span<const float> audio, std::vector<float>& odf) const noexcept;
 
     /// Valeur d'ACF normalisée au délai `lag` (en trames ODF).
-    [[nodiscard]] float acf(std::span<const float> odf,
-                            int                    lag) const noexcept;
+    [[nodiscard]] static float acf(std::span<const float> odf, int lag) noexcept;
 };
 
 }  // namespace voicelive::dsp

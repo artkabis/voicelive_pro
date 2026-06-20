@@ -101,7 +101,7 @@ inline int runAll() {
     do {                                                                                        \
         const double vl_a = static_cast<double>(actual);                                        \
         const double vl_e = static_cast<double>(expected);                                      \
-        if (!(std::abs(vl_a - vl_e) <= (tol))) {                                                \
+        if (!(std::abs(vl_a - vl_e) <= static_cast<double>(tol))) {                                                \
             ++::vltest::currentFailures();                                                      \
             std::cout << "  CHECK_NEAR échec : " #actual " ≈ " #expected " (" << vl_a << " vs " \
                       << vl_e << ", tol " << (tol) << ")  (" << __FILE__ << ":" << __LINE__     \
