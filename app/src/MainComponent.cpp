@@ -14,6 +14,11 @@
 #include "voicelive/core/Music.hpp"
 #include "voicelive/core/ProjectSerializer.hpp"
 #include "voicelive/core/Transport.hpp"
+#include "voicelive/dsp/Chorus.hpp"
+#include "voicelive/dsp/Delay.hpp"
+#include "voicelive/dsp/Equalizer.hpp"
+#include "voicelive/dsp/Reverb.hpp"
+#include "voicelive/dsp/Wah.hpp"
 #include "voicelive/engine/ChannelUtils.hpp"
 #include "voicelive/engine/WavFile.hpp"
 
@@ -760,6 +765,13 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         monoIn_.assign(engineBlock, 0.0F);
         monoOut_.assign(engineBlock, 0.0F);
         mixTmpBuf_.setSize(1, static_cast<int>(engineBlock), false, true, false);
+        // Reconnecter la source mix si un rendu existait avant la reprise
+        // (JUCE appelle releaseResources + prepareToPlay lors d'un changement de
+        // peripherique, ex. branchement USB-C, ce qui deconnecte setSource(nullptr)).
+        if (mixMemorySource_ != nullptr) {
+            mixTransport_.setSource(mixMemorySource_.get(), 0, nullptr, sampleRate, 1);
+            juce::Logger::writeToLog("Mix transport reconnecte apres reprise peripherique");
+        }
         mixTransport_.prepareToPlay(static_cast<int>(engineBlock), sampleRate);
     } catch (const std::exception& e) {
         juce::Logger::writeToLog(juce::String("ERREUR prepareToPlay: ") + e.what());
@@ -853,18 +865,12 @@ void MainComponent::releaseResources() {
 // ─── ChangeListener (hotplug USB-C / routage audio) ──────────────────────────
 
 void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source) {
-    if (dynamic_cast<juce::AudioDeviceManager*>(source) == nullptr) {
-        return;
+    // Sert uniquement au journal : HeadphoneMonitor gere deja la detection casque.
+    // On n'appelle PAS restartLastAudioDevice() ici car engine_.prepare() efface
+    // toutes les pistes enregistrees. JUCE/Oboe gere lui-meme le reroutage audio.
+    if (dynamic_cast<juce::AudioDeviceManager*>(source) != nullptr) {
+        juce::Logger::writeToLog("Changement peripherique audio (USB-C / BT ?)");
     }
-    // Ignore si une relance est deja en attente ou en cooldown (evite les boucles
-    // car restartLastAudioDevice() lui-meme declenche un ChangeListener).
-    if (pendingAudioRestart_ || audioRestartCooldown_ > 0) {
-        return;
-    }
-    juce::Logger::writeToLog("Changement peripherique audio detecte (USB-C ?)");
-    blocksAtRestartRequest_ = static_cast<long long>(engine_.diagnostics().blocksProcessed);
-    pendingAudioRestart_ = true;
-    audioDeadTicks_ = 0;
 }
 
 // ─── Timer ────────────────────────────────────────────────────────────────────
@@ -874,47 +880,6 @@ void MainComponent::timerCallback() {
         return;
 
     ++timerTickCount_;
-
-    // ── Relance audio apres hotplug USB-C ─────────────────────────────────────
-    // Quand Oboe detecte un changement de routage (ex. casque USB-C branche), son
-    // callback interne peut declencher une assertion (juce_Oboe_android.cpp:484) qui
-    // coupe definitivement les callbacks audio. On detecte ce cas en comparant le
-    // compteur de blocs moteur 300ms apres le changement : s'il n'a pas avance, l'audio
-    // est mort et on force une relance propre via AudioDeviceManager.
-    if (audioRestartCooldown_ > 0) {
-        --audioRestartCooldown_;
-    }
-    if (pendingAudioRestart_) {
-        ++audioDeadTicks_;
-        if (audioDeadTicks_ >= 3) {
-            const auto curBlocks = static_cast<long long>(engine_.diagnostics().blocksProcessed);
-            if (curBlocks >= blocksAtRestartRequest_ + 30) {
-                // Audio vivant : JUCE/Oboe a recupere tout seul, pas besoin de relancer.
-                pendingAudioRestart_ = false;
-                audioDeadTicks_ = 0;
-                juce::Logger::writeToLog("Hotplug USB-C: audio recupere automatiquement");
-            } else if (audioDeadTicks_ >= 5) {
-                // Audio toujours mort 500ms apres le changement : relance forcee.
-                pendingAudioRestart_ = false;
-                audioDeadTicks_ = 0;
-                audioRestartCooldown_ = 30;  // 3s avant prochaine relance autorisee
-                juce::Logger::writeToLog("Hotplug USB-C: relance audio (blocs bloques a " +
-                                         juce::String(static_cast<int>(curBlocks)) + ")");
-                // Terminer tout enregistrement en cours pour ne pas corrompre la prise.
-                if (anyTrackRecording_.load(std::memory_order_acquire)) {
-                    for (std::size_t i = 0; i < kTrackCount; ++i) {
-                        if (const auto* p = engine_.track(i);
-                            p != nullptr && p->track().state() == TrackState::Recording) {
-                            postCommand(EngineCommand::Action::FinishRecording, i, 1.0F, false);
-                        }
-                    }
-                    anyTrackRecording_.store(false, std::memory_order_release);
-                }
-                deviceManager.restartLastAudioDevice();
-            }
-        }
-    }
-    // ─────────────────────────────────────────────────────────────────────────
 
     // On Android, scanAndroidOutputs() costs ~15 JNI bridge crossings per call.
     // Rate-limit to 1 Hz (every 10th tick) — fast enough for headphone hotplug.
@@ -1514,6 +1479,13 @@ void MainComponent::renderMixToTrack() {
         return;
     }
 
+    // Frequence d'echantillonnage courante (SampleRate value-type requis par prepare()).
+    const auto srUnsigned = static_cast<unsigned>(juce::jmax(1.0, sampleRate_));
+    const auto sr = SampleRate::create(srUnsigned);
+    if (!sr.ok()) {
+        return;
+    }
+
     std::vector<float> mixData(mixLen, 0.0F);
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         if (!includeBtns_[i].getToggleState())
@@ -1525,10 +1497,72 @@ void MainComponent::renderMixToTrack() {
         const std::size_t trackLen = audio.loopLength();
         if (trackLen == 0 || strips_[i].muteButton.getToggleState())
             continue;
+
+        // Copie des echantillons bruts (en boucle sur toute la duree du mix).
+        std::vector<float> trackBuf(mixLen);
+        for (std::size_t s = 0; s < mixLen; ++s)
+            trackBuf[s] = audio.sampleAt(s % trackLen);
+
+        // Application des effets de piste avec des instances isolees (la chaine live
+        // n'est pas touchee : le rendu offline ne perturbe pas la performance en cours).
+        // Chaque instance part d'un etat initial vierge, exactement comme lors d'une
+        // nouvelle lecture depuis le debut de boucle.
+        const std::span<float> block{trackBuf.data(), trackBuf.size()};
+        const auto& fx = fxPanels_[i];
+
+        if (fx.reverb != nullptr && fx.reverbBtn.getToggleState()) {
+            voicelive::dsp::Reverb r;
+            r.setRoomSize(fx.reverb->roomSize());
+            r.setDamping(fx.reverb->damping());
+            r.setWet(fx.reverb->wet());
+            r.setDry(fx.reverb->dry());
+            r.prepare(sr.value(), mixLen);
+            r.process(block);
+        }
+        if (fx.delay != nullptr && fx.delayBtn.getToggleState()) {
+            voicelive::dsp::Delay d;
+            d.setDelaySeconds(fx.delay->delaySeconds());
+            d.setFeedback(fx.delay->feedback());
+            d.setMix(fx.delay->mix());
+            d.prepare(sr.value(), mixLen);
+            d.process(block);
+        }
+        if (fx.wah != nullptr && fx.wahBtn.getToggleState()) {
+            voicelive::dsp::Wah w;
+            w.setRate(static_cast<float>(fx.wahRateSlider.getValue()));
+            w.setMinFrequency(fx.wah->minFrequency());
+            w.setMaxFrequency(fx.wah->maxFrequency());
+            w.setResonance(fx.wah->resonance());
+            w.setMix(fx.wah->mix());
+            w.prepare(sr.value(), mixLen);
+            w.process(block);
+        }
+        if (fx.chorus != nullptr && fx.chorusBtn.getToggleState()) {
+            voicelive::dsp::Chorus c;
+            c.setRate(fx.chorus->rate());
+            c.setDepth(fx.chorus->depth());
+            c.setMix(fx.chorus->mix());
+            c.prepare(sr.value(), mixLen);
+            c.process(block);
+        }
+
+        // Accumulation dans le mix avec le gain de piste.
         const float gain = static_cast<float>(strips_[i].gainSlider.getValue());
         for (std::size_t s = 0; s < mixLen; ++s)
-            mixData[s] += audio.sampleAt(s % trackLen) * gain;
+            mixData[s] += trackBuf[s] * gain;
     }
+
+    // EQ master applique sur le mix complet (instance isolee, memes parametres
+    // que l'EQ live lus depuis les sliders UI — source de verite).
+    if (masterEq_ != nullptr) {
+        voicelive::dsp::Equalizer eq;
+        eq.setLowGain(masterEq_->lowGain());
+        eq.setMidGain(masterEq_->midGain());
+        eq.setHighGain(masterEq_->highGain());
+        eq.prepare(sr.value(), mixLen);
+        eq.process(std::span<float>{mixData.data(), mixData.size()});
+    }
+
     for (float& s : mixData)
         s = juce::jlimit(-1.0F, 1.0F, s);
 

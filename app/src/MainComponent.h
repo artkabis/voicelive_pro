@@ -173,13 +173,6 @@ private:
     std::atomic<float> inputLevel_{0.0F};  ///< crete |monoIn| du dernier bloc capture
     std::atomic<int> lastBlockSize_{0};    ///< taille de bloc reellement vue au callback
 
-    // Relance audio automatique apres hotplug USB-C (assertion Oboe sur routing change).
-    // Tous ces champs sont acces depuis le thread UI uniquement (ChangeListener + timerCallback).
-    bool pendingAudioRestart_ = false;
-    long long blocksAtRestartRequest_ = 0;  ///< valeur de blocksProcessed au moment du hotplug
-    int audioDeadTicks_ = 0;                ///< ticks consecutifs sans nouveau bloc apres hotplug
-    int audioRestartCooldown_ = 0;          ///< ticks restants avant prochaine relance autorisee
-
     double sampleRate_ = 48000.0;
     bool effectsSetup_ = false;
     int timerTickCount_ = 0;
