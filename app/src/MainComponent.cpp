@@ -179,7 +179,7 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
         g.drawVerticalLine(static_cast<int>(xPh), 0.0F, static_cast<float>(h));
         // Etiquette de position
         const double posSec = static_cast<double>(playheadPos_) / playheadSr_;
-        const juce::String timeStr = juce::String(static_cast<int>(posSec), 0) + "." +
+        const juce::String timeStr = juce::String(static_cast<int>(posSec)) + "." +
                                      juce::String(static_cast<int>(posSec * 10.0) % 10) + "s";
         g.setFont(juce::Font(juce::FontOptions{}.withHeight(10.0F)));
         g.setColour(juce::Colours::white.withAlpha(0.9F));
