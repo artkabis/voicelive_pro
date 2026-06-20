@@ -506,6 +506,26 @@ MainComponent::MainComponent() {
     exportMixBtn_.onClick = [this] { exportMix(); };
     contentPane_.addAndMakeVisible(exportMixBtn_);
 
+    // Section peripheriques audio : choix explicite sortie/entree (nom + type).
+    // Les listes sont remplies par refreshDeviceList() apres setAudioChannels().
+    audioDevLabel_.setText("Peripheriques audio", juce::dontSendNotification);
+    audioDevLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
+    contentPane_.addAndMakeVisible(audioDevLabel_);
+
+    outputDevLabel_.setText("Sortie", juce::dontSendNotification);
+    outputDevLabel_.setJustificationType(juce::Justification::centredLeft);
+    contentPane_.addAndMakeVisible(outputDevLabel_);
+    outputDeviceBox_.setTextWhenNoChoicesAvailable("(aucun)");
+    outputDeviceBox_.onChange = [this] { applyDeviceSelection(); };
+    contentPane_.addAndMakeVisible(outputDeviceBox_);
+
+    inputDevLabel_.setText("Entree", juce::dontSendNotification);
+    inputDevLabel_.setJustificationType(juce::Justification::centredLeft);
+    contentPane_.addAndMakeVisible(inputDevLabel_);
+    inputDeviceBox_.setTextWhenNoChoicesAvailable("(aucun)");
+    inputDeviceBox_.onChange = [this] { applyDeviceSelection(); };
+    contentPane_.addAndMakeVisible(inputDeviceBox_);
+
     // I/O section
     ioLabel_.setText("Projet", juce::dontSendNotification);
     ioLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
@@ -555,6 +575,7 @@ MainComponent::MainComponent() {
     analysis_.assign(kAnalysisSize, 0.0F);
     setSize(400, 800);
     setAudioChannels(2, 2);
+    refreshDeviceList();  // peuple les listes une fois le type de peripherique cree
 
     // NB (Android) : ne PAS forcer setAudioDeviceSetup(bufferSize=256) ici.
     // JUCE pilote Oboe, qui négocie déjà le buffer basse latence optimal. Forcer
@@ -903,6 +924,7 @@ void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source) {
     // toutes les pistes enregistrees. JUCE/Oboe gere lui-meme le reroutage audio.
     if (dynamic_cast<juce::AudioDeviceManager*>(source) != nullptr) {
         juce::Logger::writeToLog("Changement peripherique audio (USB-C / BT ?)");
+        refreshDeviceList();  // un hotplug peut ajouter/retirer une entree de la liste
     }
 }
 
@@ -993,6 +1015,7 @@ void MainComponent::timerCallback() {
     // Between polls, headphoneLed_ still reads the cached atomic value.
     if (timerTickCount_ % 10 == 0) {
         headphoneMonitor_.poll(deviceManager);
+        refreshDeviceList();  // capte les hotplugs USB-C qu'Android ne notifie pas toujours
     }
     headphoneLed_.setConnected(headphoneMonitor_.isConnected());
 
@@ -1156,6 +1179,83 @@ void MainComponent::updateDiagnostics() {
     }
 }
 
+void MainComponent::refreshDeviceList() {
+    auto* type = deviceManager.getCurrentDeviceTypeObject();
+    if (type == nullptr) {
+        return;
+    }
+
+    // Re-enumere la liste physique (necessaire au hotplug USB-C). En amont
+    // OboeAudioIODeviceType::scanForDevices() est vide ; android.yml le patche pour
+    // qu'il rebatisse la liste. Sur desktop / sans patch c'est un no-op inoffensif.
+    type->scanForDevices();
+
+    const auto setup = deviceManager.getAudioDeviceSetup();
+
+    // Remplit une ComboBox sans casser une selection en cours ni declencher onChange.
+    const auto fill = [](juce::ComboBox& box, const juce::StringArray& names,
+                         const juce::String& current) {
+        if (box.isPopupActive()) {
+            return;  // l'utilisateur est en train de choisir : ne pas reconstruire
+        }
+        const juce::String wanted =
+            current.isNotEmpty() ? current : (names.isEmpty() ? juce::String() : names[0]);
+
+        juce::StringArray existing;
+        for (int i = 0; i < box.getNumItems(); ++i) {
+            existing.add(box.getItemText(i));
+        }
+        if (existing == names && box.getText() == wanted) {
+            return;  // deja a jour : on evite de reinitialiser la selection
+        }
+
+        box.clear(juce::dontSendNotification);
+        for (int i = 0; i < names.size(); ++i) {
+            box.addItem(names[i], i + 1);  // les noms JUCE ne sont jamais vides
+        }
+        if (!names.isEmpty()) {
+            const int idx = names.indexOf(wanted);
+            box.setSelectedId(idx >= 0 ? idx + 1 : 1, juce::dontSendNotification);
+        }
+    };
+
+    fill(outputDeviceBox_, type->getDeviceNames(false), setup.outputDeviceName);
+    fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
+}
+
+void MainComponent::applyDeviceSelection() {
+    if (deviceManager.getCurrentDeviceTypeObject() == nullptr) {
+        return;
+    }
+
+    auto setup = deviceManager.getAudioDeviceSetup();
+    const juce::String outName = outputDeviceBox_.getText();
+    const juce::String inName = inputDeviceBox_.getText();
+
+    // Pas de changement reel : on sort (evite la reentrance via changeListenerCallback
+    // -> refreshDeviceList qui pourrait re-declencher onChange).
+    if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
+        return;
+    }
+
+    setup.outputDeviceName = outName;
+    setup.inputDeviceName = inName;
+    // On laisse Oboe renegocier debit/buffer (sinon forcer une taille peut rouvrir
+    // le peripherique en sortie seule -> perte du micro, cf. note de setAudioChannels).
+    setup.sampleRate = 0;
+    setup.bufferSize = 0;
+    setup.useDefaultInputChannels = true;
+    setup.useDefaultOutputChannels = true;
+
+    const auto err = deviceManager.setAudioDeviceSetup(setup, true);
+    if (err.isNotEmpty()) {
+        juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err + "'");
+    } else {
+        juce::Logger::writeToLog("Peripherique audio -> sortie='" + outName + "' entree='" +
+                                 inName + "'");
+    }
+}
+
 void MainComponent::paint(juce::Graphics& g) {
     g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
 }
@@ -1181,6 +1281,8 @@ void MainComponent::resized() {
     constexpr int kMixLblH = 26;
     constexpr int kMixWaveH = 60;
     constexpr int kMixEditH = 36;
+    constexpr int kAudioLblH = 26;
+    constexpr int kAudioRowH = 40;
     constexpr int kIoLblH = 26;
     constexpr int kIoRowH = 44;
     constexpr int kCopyH = 40;
@@ -1194,8 +1296,9 @@ void MainComponent::resized() {
     const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap +
                        trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
                        3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
-                       kMixWaveH + 4 + kMixEditH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH +
-                       kGap / 2 + kDiagH + pad;
+                       kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
+                       kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 +
+                       kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
@@ -1337,6 +1440,22 @@ void MainComponent::resized() {
         cutMixBtn_.setBounds(editRow.removeFromLeft(third).reduced(2));
         trimMixBtn_.setBounds(editRow.removeFromLeft(third).reduced(2));
         exportMixBtn_.setBounds(editRow.reduced(2));
+    }
+
+    // Peripheriques audio section : [label] / [Sortie | combo] / [Entree | combo]
+    area.removeFromTop(kGap);
+    audioDevLabel_.setBounds(area.removeFromTop(kAudioLblH));
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kAudioRowH);
+        outputDevLabel_.setBounds(row.removeFromLeft(70));
+        outputDeviceBox_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kAudioRowH);
+        inputDevLabel_.setBounds(row.removeFromLeft(70));
+        inputDeviceBox_.setBounds(row.reduced(2));
     }
 
     // Projet section

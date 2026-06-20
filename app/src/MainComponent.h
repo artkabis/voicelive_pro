@@ -127,6 +127,8 @@ private:
     void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
     void updateDiagnostics();
+    void refreshDeviceList();     ///< met a jour les listes de peripheriques (sortie/entree)
+    void applyDeviceSelection();  ///< applique le choix via setAudioDeviceSetup (routage Oboe)
 
     // --- Edition de piste ----------------------------------------------------
     void cutSelection(std::size_t index);
@@ -249,6 +251,15 @@ private:
     juce::TextButton cutMixBtn_;
     juce::TextButton trimMixBtn_;
     juce::TextButton exportMixBtn_;  ///< Export mix depuis mixTrackAudio_.
+
+    // Selection explicite du peripherique audio. JUCE 8 expose la liste physique
+    // (nom produit + type) via OboeAudioIODeviceType::getDeviceNames() et route
+    // reellement le flux via builder.setDeviceId() : aucun hack natif necessaire.
+    juce::Label audioDevLabel_;
+    juce::Label outputDevLabel_;
+    juce::Label inputDevLabel_;
+    juce::ComboBox outputDeviceBox_;
+    juce::ComboBox inputDeviceBox_;
 
     juce::Label ioLabel_;
     juce::TextButton saveProjectBtn_;

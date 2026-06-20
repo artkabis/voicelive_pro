@@ -75,6 +75,23 @@ jobs:
           echo "Occurrences Exclusive après patch : $after"
           [ "$after" -eq 0 ] && echo "OK : Oboe forcé en mode Shared ($before remplacées)"
 
+      - name: Rendre scanForDevices() ré-énumérant (rafraîchir le sélecteur au hotplug)
+        # OboeAudioIODeviceType::scanForDevices() est vide en amont : la liste des
+        # périphériques physiques est figée à la création du type. Le sélecteur de
+        # périphérique de l'app ne verrait donc jamais un casque branché APRÈS le
+        # lancement. On le rend ré-énumérant (clear + checkAvailableDevices) pour un
+        # rafraîchissement à chaud. Le build ÉCHOUE si la signature exacte disparaît.
+        run: |
+          OBOE="juce/modules/juce_audio_devices/native/juce_Oboe_android.cpp"
+          NEEDLE="void scanForDevices() override {}"
+          if ! grep -qF "$NEEDLE" "$OBOE"; then
+            echo "ÉCHEC : signature scanForDevices() introuvable (source JUCE modifiée ?)"; exit 1
+          fi
+          sed -i 's|void scanForDevices() override {}|void scanForDevices() override { inputDevices.clear(); outputDevices.clear(); checkAvailableDevices(); }|' "$OBOE"
+          grep -qF "checkAvailableDevices(); }" "$OBOE" \
+            && echo "OK : scanForDevices() ré-énumère désormais" \
+            || { echo "ÉCHEC : patch scanForDevices non appliqué"; exit 1; }
+
       - name: Construire le Projucer
         run: |
           cmake -S juce -B juce-build -DJUCE_BUILD_EXTRAS=ON -DCMAKE_BUILD_TYPE=Release
