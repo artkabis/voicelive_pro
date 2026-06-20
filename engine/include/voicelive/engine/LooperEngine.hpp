@@ -53,9 +53,9 @@ struct EngineCommand {
 
     Action action = Action::Stop;
     std::size_t track = 0;
-    float gain = 1.0F;          ///< Pour SetGain (lineaire).
-    bool muted = false;         ///< Pour SetMuted.
-    std::size_t position = 0;   ///< Pour Seek (en echantillons).
+    float gain = 1.0F;         ///< Pour SetGain (lineaire).
+    bool muted = false;        ///< Pour SetMuted.
+    std::size_t position = 0;  ///< Pour Seek (en echantillons).
 };
 
 /// Instantané d'état du moteur, pour le diagnostic (panneau Diag de l'app).

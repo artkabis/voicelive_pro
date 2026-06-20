@@ -129,7 +129,8 @@ float MainComponent::TrackWaveform::pixelToNorm(float px) const noexcept {
 
 float MainComponent::TrackWaveform::normToPixel(float norm) const noexcept {
     const float span = viewEnd_ - viewStart_;
-    if (span < 1e-6F) return 0.0F;
+    if (span < 1e-6F)
+        return 0.0F;
     return ((norm - viewStart_) / span) * static_cast<float>(getWidth());
 }
 
@@ -165,14 +166,15 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
                                    viewStart_ != cachedViewStart_ || viewEnd_ != cachedViewEnd_);
         if (cacheInvalid) {
             peakCache_.resize(static_cast<std::size_t>(drawW), 0.0F);
-            const std::size_t sFirst = static_cast<std::size_t>(viewStart_ * static_cast<float>(len));
-            const std::size_t sLast  = static_cast<std::size_t>(viewEnd_   * static_cast<float>(len));
-            const std::size_t span   = sLast > sFirst ? sLast - sFirst : 0;
+            const std::size_t sFirst =
+                static_cast<std::size_t>(viewStart_ * static_cast<float>(len));
+            const std::size_t sLast = static_cast<std::size_t>(viewEnd_ * static_cast<float>(len));
+            const std::size_t span = sLast > sFirst ? sLast - sFirst : 0;
             for (int px = 0; px < drawW; ++px) {
-                const std::size_t sBegin = sFirst + static_cast<std::size_t>(px) * span /
-                                           static_cast<std::size_t>(drawW);
-                const std::size_t sEnd   = sFirst + static_cast<std::size_t>(px + 1) * span /
-                                           static_cast<std::size_t>(drawW);
+                const std::size_t sBegin =
+                    sFirst + static_cast<std::size_t>(px) * span / static_cast<std::size_t>(drawW);
+                const std::size_t sEnd = sFirst + static_cast<std::size_t>(px + 1) * span /
+                                                      static_cast<std::size_t>(drawW);
                 float peak = 0.0F;
                 for (std::size_t s = sBegin; s < sEnd && s < len; ++s) {
                     peak = std::max(peak, std::abs(audio_->sampleAt(s)));
@@ -195,8 +197,7 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
 
     // Tete de lecture (playhead) — ligne verte animee + horodatage
     if (playheadLen_ > 0 && audio_->length() > 0) {
-        const float normPh =
-            static_cast<float>(playheadPos_) / static_cast<float>(playheadLen_);
+        const float normPh = static_cast<float>(playheadPos_) / static_cast<float>(playheadLen_);
         const float xPh = normToPixel(normPh);
         if (xPh >= 0.0F && xPh <= static_cast<float>(w)) {
             g.setColour(juce::Colour(0xFF00FF88).withAlpha(0.25F));
@@ -208,8 +209,8 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
                                          juce::String(static_cast<int>(posSec * 10.0) % 10) + "s";
             g.setFont(juce::Font(juce::FontOptions{}.withHeight(10.0F)));
             g.setColour(juce::Colours::white.withAlpha(0.9F));
-            g.drawText(timeStr, static_cast<int>(xPh) + 3, 2, 38, 13,
-                       juce::Justification::left, false);
+            g.drawText(timeStr, static_cast<int>(xPh) + 3, 2, 38, 13, juce::Justification::left,
+                       false);
         }
     }
 
@@ -1393,12 +1394,11 @@ void MainComponent::resized() {
     constexpr int kTrackH = kRowH + 6 + kRowH + 4 + kWaveH + 4 + kFxRowH + kFxRowH + kEditRowH;
 
     const int trackCount = static_cast<int>(kTrackCount);
-    const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap +
-                       trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
-                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
-                       kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
-                       kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 +
-                       kDiagH + pad;
+    const int totalH =
+        pad + kTitleH + kGap / 2 + kTunerH + kGap + trackCount * (kTrackH + kGap / 2) + kGap +
+        kTransH + kGap + kEqLblH + 4 + 3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 +
+        kEditRowH + 4 + kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
+        kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 + kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
