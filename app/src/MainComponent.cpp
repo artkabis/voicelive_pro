@@ -740,8 +740,14 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         const auto rate = static_cast<unsigned>(juce::jmax(1.0, sampleRate));
         const auto capacity = static_cast<std::size_t>(juce::jmax(1.0, sampleRate) * 30.0);
 
+        // Marge de securite : Oboe (Android) peut livrer des blocs plus grands que
+        // samplesPerBlockExpected. On dimensionne moteur et tampons avec une reserve
+        // pour que le callback n'abandonne jamais un bloc (sinon micro muet : ni
+        // enregistrement, ni spectre). getNextAudioBlock agrandit encore si besoin.
+        const std::size_t engineBlock = juce::jmax(blockSize, std::size_t{4096});
+
         if (const auto sr = SampleRate::create(rate); sr.ok()) {
-            static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, blockSize));
+            static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, engineBlock));
             sampleRate_ = sampleRate;
             setupEffects();
             juce::Logger::writeToLog("VoiceLive: audio pret " + juce::String(rate) + " Hz, bloc " +
@@ -749,10 +755,10 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         } else {
             juce::Logger::writeToLog("VoiceLive: ERREUR frequence " + juce::String(rate));
         }
-        monoIn_.assign(blockSize, 0.0F);
-        monoOut_.assign(blockSize, 0.0F);
-        mixTmpBuf_.setSize(1, static_cast<int>(blockSize), false, true, false);
-        mixTransport_.prepareToPlay(static_cast<int>(blockSize), sampleRate);
+        monoIn_.assign(engineBlock, 0.0F);
+        monoOut_.assign(engineBlock, 0.0F);
+        mixTmpBuf_.setSize(1, static_cast<int>(engineBlock), false, true, false);
+        mixTransport_.prepareToPlay(static_cast<int>(engineBlock), sampleRate);
     } catch (const std::exception& e) {
         juce::Logger::writeToLog(juce::String("ERREUR prepareToPlay: ") + e.what());
     } catch (...) {
@@ -766,9 +772,18 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     }
     juce::AudioBuffer<float>* buffer = bufferToFill.buffer;
     const auto numSamples = static_cast<std::size_t>(bufferToFill.numSamples);
-    if (numSamples == 0 || numSamples > monoIn_.size()) {
-        bufferToFill.clearActiveBufferRegion();
+    if (numSamples == 0) {
         return;
+    }
+    // Filet de securite : si le bloc depasse la taille preparee (renegociation
+    // Oboe sur Android), on agrandit les tampons plutot que d'abandonner le bloc.
+    // Sans cela, le micro restait muet (ni enregistrement, ni spectre).
+    if (numSamples > monoIn_.size()) {
+        monoIn_.assign(numSamples, 0.0F);
+        monoOut_.assign(numSamples, 0.0F);
+        if (mixTmpBuf_.getNumSamples() < static_cast<int>(numSamples)) {
+            mixTmpBuf_.setSize(1, static_cast<int>(numSamples), false, true, false);
+        }
     }
 
     const int numChannels = juce::jmin(buffer->getNumChannels(), kMaxChannels);
@@ -784,8 +799,12 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     const std::span<float> monoOut{monoOut_.data(), numSamples};
     channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
 
-    // Alimente la fenetre d'analyse pour l'accordeur et le spectre.
-    if (numSamples < analysis_.size()) {
+    // Alimente la fenetre d'analyse glissante (accordeur + spectre). On gere aussi
+    // le cas d'un bloc >= a la fenetre : on ne garde que les derniers echantillons.
+    if (numSamples >= analysis_.size()) {
+        std::copy(monoIn_.begin() + static_cast<std::ptrdiff_t>(numSamples - analysis_.size()),
+                  monoIn_.begin() + static_cast<std::ptrdiff_t>(numSamples), analysis_.begin());
+    } else {
         const std::size_t keep = analysis_.size() - numSamples;
         std::copy(analysis_.begin() + static_cast<std::ptrdiff_t>(numSamples), analysis_.end(),
                   analysis_.begin());
@@ -859,11 +878,15 @@ void MainComponent::timerCallback() {
             waveforms_[i].setAudio(&proc->audio());
             const std::size_t len = proc->audio().loopLength();
             const auto state = proc->track().state();
+            const bool isRecording = (state == TrackState::Recording);
             const bool isActive = (state == TrackState::Playing ||
-                                   state == TrackState::Overdubbing);
+                                   state == TrackState::Overdubbing || isRecording);
             if (isActive) {
-                // Repaint every tick to animate the playhead
-                waveforms_[i].setPlayhead(proc->playhead(), len > 0 ? len : 1, sampleRate_);
+                // Repaint a chaque tick pour animer la tete de lecture. En
+                // enregistrement, la tete suit la fin du contenu capture (len),
+                // ce qui donne un retour visuel immediat que le micro tourne.
+                const std::size_t ph = isRecording ? len : proc->playhead();
+                waveforms_[i].setPlayhead(ph, len > 0 ? len : 1, sampleRate_);
                 waveforms_[i].repaint();
             } else {
                 if (len != lastWaveformLength_[i]) {
