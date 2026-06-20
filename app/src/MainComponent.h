@@ -253,6 +253,10 @@ private:
     juce::TextButton saveProjectBtn_;
     juce::TextButton loadProjectBtn_;
 
+    // logViewport_ doit etre declare AVANT diagView_ : la destruction C++ se fait
+    // en ordre inverse, donc diagView_ est detruit en premier, ce qui le detache
+    // proprement de logViewport_ avant que logViewport_ ne soit lui-meme detruit.
+    juce::Viewport logViewport_;
     juce::TextEditor diagView_;
     juce::TextButton copyButton_;
 

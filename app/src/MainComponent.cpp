@@ -519,13 +519,20 @@ MainComponent::MainComponent() {
     loadProjectBtn_.onClick = [this] { loadProject(); };
     contentPane_.addAndMakeVisible(loadProjectBtn_);
 
-    // Diagnostic
+    // Diagnostic : TextEditor dans un Viewport dedie.
+    // Le TextEditor desactive l'interception des evenements souris pour laisser
+    // logViewport_ capter le drag-to-scroll. Sans cela, sur Android, le glissement
+    // dans la zone de logs faisait defiler la page entiere au lieu du texte.
     diagView_.setMultiLine(true);
     diagView_.setReadOnly(true);
     diagView_.setCaretVisible(false);
-    diagView_.setScrollbarsShown(true);
+    diagView_.setScrollbarsShown(false);  // barre geree par logViewport_
     diagView_.setFont(juce::Font(juce::FontOptions{}.withHeight(13.0F)));
-    contentPane_.addAndMakeVisible(diagView_);
+    diagView_.setInterceptsMouseClicks(false, false);
+
+    logViewport_.setScrollBarsShown(true, false);  // barre verticale uniquement
+    logViewport_.setViewedComponent(&diagView_, false);
+    contentPane_.addAndMakeVisible(logViewport_);
 
     copyButton_.setButtonText("Copier le diagnostic");
     copyButton_.onClick = [this] {
@@ -1108,6 +1115,9 @@ void MainComponent::updateDiagnostics() {
 
     text << "\n--- Journal (recent) ---\n" << appLogger_.snapshot();
     diagView_.setText(text, false);
+    // Faire defiler automatiquement vers le bas pour montrer les entrees recentes.
+    // L'utilisateur peut remonter manuellement dans la zone de logs.
+    logViewport_.setViewPositionProportionately(0.0, 1.0);
 }
 
 void MainComponent::paint(juce::Graphics& g) {
@@ -1307,7 +1317,15 @@ void MainComponent::resized() {
     area.removeFromTop(kGap);
     copyButton_.setBounds(area.removeFromTop(kCopyH).reduced(2));
     area.removeFromTop(kGap / 2);
-    diagView_.setBounds(area.removeFromTop(kDiagH));
+    {
+        const auto logBounds = area.removeFromTop(kDiagH);
+        logViewport_.setBounds(logBounds);
+        // Le contenu du TextEditor est plus haut que la fenetre visible : on lui
+        // donne la largeur sans la barre de defilement et une hauteur fixe couvrant
+        // ~200 lignes (appLogger_ est plafonne a 200 lignes x ~16 px = 3200 px).
+        const int logW = juce::jmax(10, logViewport_.getMaximumVisibleWidth());
+        diagView_.setSize(logW, 3200);
+    }
 }
 
 // ─── Controle des pistes ──────────────────────────────────────────────────────
