@@ -162,6 +162,8 @@ private:
 
     double sampleRate_ = 48000.0;
     bool effectsSetup_ = false;
+    int timerTickCount_ = 0;
+    std::array<std::size_t, kTrackCount> lastWaveformLength_{};
 
     /// Edition en attente : appliquee des que la piste atteint Stopped/Empty.
     struct PendingEdit {

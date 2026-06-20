@@ -749,9 +749,14 @@ void MainComponent::timerCallback() {
     if (analysis_.empty())
         return;
 
-    // Re-sonder le peripherique de sortie avant de lire l'etat : sur Android,
-    // le hotplug USB-C ne remonte pas toujours via AudioDeviceManager::ChangeListener.
-    headphoneMonitor_.poll(deviceManager);
+    ++timerTickCount_;
+
+    // On Android, scanAndroidOutputs() costs ~15 JNI bridge crossings per call.
+    // Rate-limit to 1 Hz (every 10th tick) — fast enough for headphone hotplug.
+    // Between polls, headphoneLed_ still reads the cached atomic value.
+    if (timerTickCount_ % 10 == 0) {
+        headphoneMonitor_.poll(deviceManager);
+    }
     headphoneLed_.setConnected(headphoneMonitor_.isConnected());
 
     checkPendingEdit();
@@ -774,15 +779,25 @@ void MainComponent::timerCallback() {
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         if (const auto* proc = engine_.track(i); proc != nullptr) {
             waveforms_[i].setAudio(&proc->audio());
+            // Only repaint when loop content changed — avoids redundant GPU draws
+            // during stable playback when loop length is constant.
+            const std::size_t len = proc->audio().loopLength();
+            if (len != lastWaveformLength_[i]) {
+                lastWaveformLength_[i] = len;
+                waveforms_[i].repaint();
+            }
         }
-        waveforms_[i].repaint();
     }
 
     if (mixTrackAudio_.length() > 0) {
         mixWaveform_.repaint();
     }
 
-    updateDiagnostics();
+    // diagView_.setText() triggers full text re-layout on every call. Rate-limit
+    // to 2 Hz (every 5th tick) — the diagnostic view does not need 10 Hz updates.
+    if (timerTickCount_ % 5 == 0) {
+        updateDiagnostics();
+    }
 }
 
 void MainComponent::updateDiagnostics() {
