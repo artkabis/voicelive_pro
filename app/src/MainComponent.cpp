@@ -108,6 +108,13 @@ void MainComponent::TrackWaveform::setAudio(const voicelive::engine::LoopAudio* 
     audio_ = audio;
 }
 
+void MainComponent::TrackWaveform::setPlayhead(std::size_t pos, std::size_t totalLen,
+                                               double sr) noexcept {
+    playheadPos_ = pos;
+    playheadLen_ = totalLen;
+    playheadSr_ = sr > 0.0 ? sr : 48000.0;
+}
+
 void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
     const auto bounds = getLocalBounds().toFloat();
     g.setColour(juce::Colour(0xFF0D1117));
@@ -158,6 +165,26 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
                 g.drawVerticalLine(px + 2, midY - half, midY + half);
             }
         }
+    }
+
+    // Tete de lecture (playhead) — ligne verte animee + horodatage
+    if (playheadLen_ > 0 && audio_ != nullptr && audio_->length() > 0) {
+        const float xPh = static_cast<float>(playheadPos_) /
+                          static_cast<float>(playheadLen_) * static_cast<float>(w);
+        // Halo
+        g.setColour(juce::Colour(0xFF00FF88).withAlpha(0.25F));
+        g.fillRect(juce::jmax(0.0F, xPh - 1.5F), 0.0F, 4.0F, static_cast<float>(h));
+        // Ligne principale
+        g.setColour(juce::Colour(0xFF00FF88));
+        g.drawVerticalLine(static_cast<int>(xPh), 0.0F, static_cast<float>(h));
+        // Etiquette de position
+        const double posSec = static_cast<double>(playheadPos_) / playheadSr_;
+        const juce::String timeStr = juce::String(static_cast<int>(posSec), 0) + "." +
+                                     juce::String(static_cast<int>(posSec * 10.0) % 10) + "s";
+        g.setFont(juce::Font(juce::FontOptions{}.withHeight(10.0F)));
+        g.setColour(juce::Colours::white.withAlpha(0.9F));
+        const int labelX = static_cast<int>(xPh) + 3;
+        g.drawText(timeStr, labelX, 2, 38, 13, juce::Justification::left, false);
     }
 
     // Surbrillance de la selection (zone orange semi-transparente)
@@ -427,6 +454,36 @@ MainComponent::MainComponent() {
     mixWaveform_.setAudio(&mixTrackAudio_);
     contentPane_.addAndMakeVisible(mixWaveform_);
 
+    mixPlayBtn_.setButtonText("Play");
+    mixPlayBtn_.onClick = [this] {
+        if (mixTransport_.getLengthInSeconds() <= 0.0) {
+            return;
+        }
+        if (mixTransport_.hasStreamFinished()) {
+            mixTransport_.setPosition(0.0);
+        }
+        mixTransport_.start();
+    };
+    contentPane_.addAndMakeVisible(mixPlayBtn_);
+
+    mixPauseBtn_.setButtonText("Pause");
+    mixPauseBtn_.onClick = [this] { mixTransport_.stop(); };
+    contentPane_.addAndMakeVisible(mixPauseBtn_);
+
+    mixStopBtn_.setButtonText("Stop");
+    mixStopBtn_.onClick = [this] {
+        mixTransport_.stop();
+        mixTransport_.setPosition(0.0);
+        mixWaveform_.setPlayhead(0, 0, sampleRate_);
+        mixWaveform_.repaint();
+    };
+    contentPane_.addAndMakeVisible(mixStopBtn_);
+
+    mixTimeLabel_.setText("--:--", juce::dontSendNotification);
+    mixTimeLabel_.setJustificationType(juce::Justification::centredLeft);
+    mixTimeLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(14.0F)));
+    contentPane_.addAndMakeVisible(mixTimeLabel_);
+
     cutMixBtn_.setButtonText("Cut Sel");
     cutMixBtn_.onClick = [this] { cutMixSelection(); };
     contentPane_.addAndMakeVisible(cutMixBtn_);
@@ -690,6 +747,8 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         }
         monoIn_.assign(blockSize, 0.0F);
         monoOut_.assign(blockSize, 0.0F);
+        mixTmpBuf_.setSize(1, static_cast<int>(blockSize), false, true, false);
+        mixTransport_.prepareToPlay(static_cast<int>(blockSize), sampleRate);
     } catch (const std::exception& e) {
         juce::Logger::writeToLog(juce::String("ERREUR prepareToPlay: ") + e.what());
     } catch (...) {
@@ -732,6 +791,17 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
 
     engine_.process(monoOut, monoIn);
 
+    // Lecture de la piste mix pre-rendue (AudioTransportSource gere la thread-safety)
+    if (mixTransport_.isPlaying() &&
+        mixTmpBuf_.getNumSamples() >= static_cast<int>(numSamples)) {
+        mixTmpBuf_.clear(0, 0, static_cast<int>(numSamples));
+        juce::AudioSourceChannelInfo mixInfo(&mixTmpBuf_, 0, static_cast<int>(numSamples));
+        mixTransport_.getNextAudioBlock(mixInfo);
+        const float* mixOut = mixTmpBuf_.getReadPointer(0);
+        for (std::size_t s = 0; s < numSamples; ++s)
+            monoOut[s] = juce::jlimit(-1.0F, 1.0F, monoOut[s] + mixOut[s]);
+    }
+
     // Anti-larsen : couper le haut-parleur pendant l'enregistrement SAUF si un
     // casque est detecte (casque = pas de reinjection micro, monitoring OK).
     if (anyTrackRecording_.load(std::memory_order_acquire) && !headphoneMonitor_.isConnected()) {
@@ -741,7 +811,11 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     channels::spreadToChannels(outputPtrs.data(), static_cast<std::size_t>(numChannels), monoOut);
 }
 
-void MainComponent::releaseResources() {}
+void MainComponent::releaseResources() {
+    mixTransport_.stop();
+    mixTransport_.setSource(nullptr);
+    mixTransport_.releaseResources();
+}
 
 // ─── Timer ────────────────────────────────────────────────────────────────────
 
@@ -779,18 +853,52 @@ void MainComponent::timerCallback() {
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         if (const auto* proc = engine_.track(i); proc != nullptr) {
             waveforms_[i].setAudio(&proc->audio());
-            // Only repaint when loop content changed — avoids redundant GPU draws
-            // during stable playback when loop length is constant.
             const std::size_t len = proc->audio().loopLength();
-            if (len != lastWaveformLength_[i]) {
-                lastWaveformLength_[i] = len;
+            const auto state = proc->track().state();
+            const bool isActive = (state == TrackState::Playing ||
+                                   state == TrackState::Overdubbing);
+            if (isActive) {
+                // Repaint every tick to animate the playhead
+                waveforms_[i].setPlayhead(proc->playhead(), len > 0 ? len : 1, sampleRate_);
                 waveforms_[i].repaint();
+            } else {
+                if (len != lastWaveformLength_[i]) {
+                    // Clear playhead and refresh on state/length change
+                    waveforms_[i].setPlayhead(0, 0, sampleRate_);
+                    waveforms_[i].repaint();
+                }
             }
+            lastWaveformLength_[i] = len;
         }
     }
 
-    if (mixTrackAudio_.length() > 0) {
-        mixWaveform_.repaint();
+    // Mix player : tete de lecture + etiquette de temps + activation des boutons
+    {
+        const double mixLenSec = mixTransport_.getLengthInSeconds();
+        const double mixPosSec = mixTransport_.getCurrentPosition();
+        if (mixLenSec > 0.0) {
+            const int posM = static_cast<int>(mixPosSec) / 60;
+            const int posS = static_cast<int>(mixPosSec) % 60;
+            const int posTenth = static_cast<int>(mixPosSec * 10.0) % 10;
+            const int lenM = static_cast<int>(mixLenSec) / 60;
+            const int lenS = static_cast<int>(mixLenSec) % 60;
+            mixTimeLabel_.setText(
+                juce::String(posM) + ":" + (posS < 10 ? "0" : "") + juce::String(posS) +
+                    "." + juce::String(posTenth) + " / " +
+                    juce::String(lenM) + ":" + (lenS < 10 ? "0" : "") + juce::String(lenS),
+                juce::dontSendNotification);
+
+            const std::size_t totalPcm = static_cast<std::size_t>(mixLenSec * sampleRate_);
+            const std::size_t posPcm = static_cast<std::size_t>(mixPosSec * sampleRate_);
+            mixWaveform_.setPlayhead(posPcm, totalPcm > 0 ? totalPcm : 1, sampleRate_);
+            if (mixTransport_.isPlaying() || posPcm != lastMixWavePos_) {
+                lastMixWavePos_ = posPcm;
+                mixWaveform_.repaint();
+            }
+        }
+        mixPlayBtn_.setEnabled(mixLenSec > 0.0 && !mixTransport_.isPlaying());
+        mixPauseBtn_.setEnabled(mixTransport_.isPlaying());
+        mixStopBtn_.setEnabled(mixLenSec > 0.0);
     }
 
     // diagView_.setText() triggers full text re-layout on every call. Rate-limit
@@ -894,9 +1002,9 @@ void MainComponent::resized() {
     const int trackCount = static_cast<int>(kTrackCount);
     const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap +
                        trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
-                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kMixWaveH + 4 +
-                       kMixEditH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 +
-                       kDiagH + pad;
+                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
+                       kMixWaveH + 4 + kMixEditH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH +
+                       kGap / 2 + kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
@@ -1012,12 +1120,21 @@ void MainComponent::resized() {
     area.removeFromTop(kGap);
     spectrumView_.setBounds(area.removeFromTop(kSpecH));
 
-    // Mix Master section : [label] [Render Mix] / [waveform] / [Cut] [Trim] [Export]
+    // Mix Master section : [label] [Render Mix] / [Play][Pause][Stop][time] / [waveform] / edits
     area.removeFromTop(kGap);
     {
         auto row = area.removeFromTop(kMixLblH);
         mixLabel_.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(2));
         renderMixBtn_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kEditRowH);
+        constexpr int kPlayerBtnW = 64;
+        mixPlayBtn_.setBounds(row.removeFromLeft(kPlayerBtnW).reduced(2));
+        mixPauseBtn_.setBounds(row.removeFromLeft(kPlayerBtnW).reduced(2));
+        mixStopBtn_.setBounds(row.removeFromLeft(kPlayerBtnW).reduced(2));
+        mixTimeLabel_.setBounds(row.reduced(2));
     }
     area.removeFromTop(4);
     mixWaveform_.setBounds(area.removeFromTop(kMixWaveH));
@@ -1227,11 +1344,28 @@ void MainComponent::renderMixToTrack() {
     for (float& s : mixData)
         s = juce::jlimit(-1.0F, 1.0F, s);
 
+    // Stop playback before overwriting the transport source
+    mixTransport_.stop();
+    mixTransport_.setSource(nullptr);
+    mixMemorySource_.reset();
+
     mixTrackAudio_.prepare(mixLen);
     mixTrackAudio_.append(std::span<const float>{mixData.data(), mixData.size()});
     mixWaveform_.setAudio(&mixTrackAudio_);
+    mixWaveform_.setPlayhead(0, 0, sampleRate_);
     mixWaveform_.clearSelection();
     mixWaveform_.repaint();
+
+    // Alimenter l'AudioTransportSource pour la lecture de preview
+    mixAudioBuffer_.setSize(1, static_cast<int>(mixLen), false, true, false);
+    for (std::size_t s = 0; s < mixLen; ++s)
+        mixAudioBuffer_.setSample(0, static_cast<int>(s), mixData[s]);
+    mixMemorySource_ = std::make_unique<juce::MemoryAudioSource>(mixAudioBuffer_, false, false);
+    mixTransport_.setSource(mixMemorySource_.get(), 0, nullptr, sampleRate_, 1);
+    mixTransport_.setPosition(0.0);
+    lastMixWavePos_ = 0;
+    mixTimeLabel_.setText("0:00.0 / ...", juce::dontSendNotification);
+
     juce::Logger::writeToLog("Mix rendu : " + juce::String(static_cast<int>(mixLen)) + " samples");
 }
 

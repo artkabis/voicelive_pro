@@ -62,9 +62,10 @@ private:
         juce::ToggleButton muteButton;
     };
 
-    /// Mini-waveform d'une piste avec selection interactive (toucher/glisser).
+    /// Mini-waveform d'une piste avec selection interactive et tete de lecture.
     struct TrackWaveform final : public juce::Component {
         void setAudio(const voicelive::engine::LoopAudio* audio) noexcept;
+        void setPlayhead(std::size_t pos, std::size_t totalLen, double sr) noexcept;
         void paint(juce::Graphics& g) override;
         void mouseDown(const juce::MouseEvent& e) override;
         void mouseUp(const juce::MouseEvent& e) override;
@@ -82,6 +83,10 @@ private:
         mutable std::vector<float> peakCache_;
         mutable std::size_t cachedLoopLength_ = 0;
         mutable int cachedWidth_ = 0;
+        // Playhead (message thread only)
+        std::size_t playheadPos_ = 0;
+        std::size_t playheadLen_ = 0;
+        double playheadSr_ = 48000.0;
     };
 
     /// Spectre de frequences temps-reel (FFT Cooley-Tukey 512 points).
@@ -164,6 +169,13 @@ private:
     bool effectsSetup_ = false;
     int timerTickCount_ = 0;
     std::array<std::size_t, kTrackCount> lastWaveformLength_{};
+    std::size_t lastMixWavePos_ = 0;
+
+    // Mix preview player (AudioTransportSource gere la thread-safety audio/UI).
+    juce::AudioBuffer<float> mixAudioBuffer_;
+    std::unique_ptr<juce::MemoryAudioSource> mixMemorySource_;
+    juce::AudioTransportSource mixTransport_;
+    juce::AudioBuffer<float> mixTmpBuf_;  ///< tampon pre-alloue pour le callback audio
 
     /// Edition en attente : appliquee des que la piste atteint Stopped/Empty.
     struct PendingEdit {
@@ -208,6 +220,10 @@ private:
     TrackWaveform mixWaveform_;
     juce::Label mixLabel_;
     juce::TextButton renderMixBtn_;
+    juce::TextButton mixPlayBtn_;
+    juce::TextButton mixPauseBtn_;
+    juce::TextButton mixStopBtn_;
+    juce::Label mixTimeLabel_;
     juce::TextButton cutMixBtn_;
     juce::TextButton trimMixBtn_;
     juce::TextButton exportMixBtn_;  ///< Export mix depuis mixTrackAudio_.
