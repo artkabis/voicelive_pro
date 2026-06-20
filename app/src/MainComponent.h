@@ -181,6 +181,7 @@ private:
     int audioStaleTicks_ = 0;           ///< ticks consecutifs sans nouveau bloc
     int restartCooldownTicks_ = 0;      ///< ticks restants avant relance autorisee
     bool audioWasAlive_ = false;        ///< vrai des qu'au moins un bloc a ete vu
+    int watchdogStartupAttempts_ = 0;   ///< tentatives de demarrage echouees (cas 2)
 
     double sampleRate_ = 48000.0;
     bool effectsSetup_ = false;

@@ -960,13 +960,30 @@ void MainComponent::timerCallback() {
         }
 
         // Cas 2 : echec du demarrage initial (moteur non initialise apres 2 s).
+        // restartLastAudioDevice() est INUTILISABLE ici : elle lit
+        // lastDeviceTypeConfigs (AudioDeviceManager.cpp:906) qui est vide quand
+        // aucun peripherique n'a jamais ete ouvert avec succes → jassertfalse en
+        // boucle. On utilise setAudioChannels() qui re-enumere tous les
+        // peripheriques depuis zero et peut ouvrir un flux sur le bon appareil.
+        // Limite a kMaxStartupAttempts pour eviter le spam d'assertions.
         if (!audioWasAlive_ && !engineReady && isShowing() && audioStaleTicks_ >= 20 &&
             restartCooldownTicks_ == 0) {
-            juce::Logger::writeToLog(
-                "Watchdog: moteur non initialise (demarrage audio echoue), nouvelle tentative");
-            audioStaleTicks_ = 0;
-            restartCooldownTicks_ = 50;
-            deviceManager.restartLastAudioDevice();
+            ++watchdogStartupAttempts_;
+            constexpr int kMaxStartupAttempts = 3;
+            if (watchdogStartupAttempts_ <= kMaxStartupAttempts) {
+                juce::Logger::writeToLog("Watchdog: demarrage audio echoue, tentative " +
+                                         juce::String(watchdogStartupAttempts_) + "/" +
+                                         juce::String(kMaxStartupAttempts));
+                audioStaleTicks_ = 0;
+                restartCooldownTicks_ = 50;
+                setAudioChannels(2, 2);
+            } else if (watchdogStartupAttempts_ == kMaxStartupAttempts + 1) {
+                juce::Logger::writeToLog(
+                    "ERREUR AUDIO : peripherique inaccessible apres " +
+                    juce::String(kMaxStartupAttempts) +
+                    " tentatives. Casque USB-C branche au lancement ? "
+                    "=> Deconnectez-le, relancez l'app, rebranchez le casque.");
+            }
         }
     }
     // ──────────────────────────────────────────────────────────────────────────
