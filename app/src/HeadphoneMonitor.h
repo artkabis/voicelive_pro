@@ -41,10 +41,24 @@ public:
     /// ChangeListener de l'AudioDeviceManager.
     void poll(juce::AudioDeviceManager& mgr) noexcept;
 
+    /// Ligne de diagnostic lisible (affichee dans le panneau Diag) expliquant
+    /// le resultat de la derniere detection : utile car sur Android la detection
+    /// passe par JNI et peut echouer silencieusement (contexte null, etc.).
+    [[nodiscard]] juce::String diagnostic() const;
+
 private:
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
 
     std::atomic<bool> connected_{false};
+
+    // Diagnostic de la derniere sonde (rempli par poll()).
+    // status : 0=non sonde, 1=desktop(heuristique), 2=Android JNI.
+    std::atomic<int> diagStatus_{0};
+    // Code JNI : 0=ok scanne, 1=pas de JNIEnv, 2=pas de contexte app,
+    //            3=pas d'AudioManager, 4=getDevices null/exception.
+    std::atomic<int> diagJniCode_{0};
+    std::atomic<int> diagOutputCount_{0};  // nb de peripheriques de sortie vus
+    std::atomic<int> diagFirstType_{-1};   // 1er type AudioDeviceInfo rencontre
 };
 
 }  // namespace voicelive::app

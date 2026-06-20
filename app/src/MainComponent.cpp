@@ -471,17 +471,11 @@ MainComponent::MainComponent() {
     setSize(400, 800);
     setAudioChannels(2, 2);
 
-#if JUCE_ANDROID
-    // Request a small buffer to engage AAudio low-latency path (~5 ms at 48 kHz).
-    // Only applied when the default buffer is larger to avoid a needless device restart.
-    {
-        auto setup = deviceManager.getAudioDeviceSetup();
-        if (setup.bufferSize > 256) {
-            setup.bufferSize = 256;
-            deviceManager.setAudioDeviceSetup(setup, true);
-        }
-    }
-#endif
+    // NB (Android) : ne PAS forcer setAudioDeviceSetup(bufferSize=256) ici.
+    // JUCE pilote Oboe, qui négocie déjà le buffer basse latence optimal. Forcer
+    // une taille rouvrait le périphérique en sortie seule (perte du micro → plus
+    // d'enregistrement) et la taille demandée était de toute façon ignorée. La
+    // latence est gérée par Oboe + les flags Release (-O3 -ffast-math).
 
     startTimerHz(10);
 }
@@ -800,6 +794,7 @@ void MainComponent::updateDiagnostics() {
     text << "Casque : "
          << (headphones ? "DETECTE (monitoring actif)" : "NON detecte (speaker coupe pendant rec)")
          << "\n";
+    text << headphoneMonitor_.diagnostic() << "\n";
 
     if (anyTrackRecording_.load(std::memory_order_relaxed)) {
         if (headphones) {
