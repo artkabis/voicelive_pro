@@ -74,6 +74,15 @@ public:
     core::Status prepare(core::SampleRate sampleRate, std::size_t trackCount,
                          std::size_t loopCapacity, std::size_t maxBlockSize);
 
+    /// Re-prépare UNIQUEMENT les tampons de traitement (chaînes d'effets, scratch,
+    /// métronome, master) pour une nouvelle taille de bloc, SANS toucher au contenu
+    /// enregistré des pistes ni à leur état. À utiliser lors d'un simple changement
+    /// de périphérique audio (rebranchement casque USB-C) où la configuration de base
+    /// est inchangée : permet de relancer l'audio sans perdre les boucles. Les
+    /// pointeurs d'effets déjà distribués (UI) restent valides. Hors temps réel.
+    /// Échoue si le moteur n'a jamais été préparé (appeler prepare() d'abord).
+    core::Status reconfigure(core::SampleRate sampleRate, std::size_t maxBlockSize);
+
     [[nodiscard]] std::size_t trackCount() const noexcept { return tracks_.size(); }
     [[nodiscard]] const core::Transport& transport() const noexcept { return transport_; }
     [[nodiscard]] core::Transport& transport() noexcept { return transport_; }

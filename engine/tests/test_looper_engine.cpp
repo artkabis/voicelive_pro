@@ -199,6 +199,35 @@ TEST(LooperEngine, import_charge_un_sample_mono_dans_une_piste) {
     CHECK_NEAR(out[0], 0.2F, 1e-6);  // le sample importé est joué
 }
 
+TEST(LooperEngine, reconfigure_conserve_le_contenu_des_pistes) {
+    LooperEngine engine;
+    initEngine(engine, 2);
+
+    voicelive::engine::wav::AudioData data;
+    data.channels = 1;
+    data.sampleRate = 48000;
+    data.samples = {0.5F, 0.5F, 0.5F, 0.5F};
+    REQUIRE(engine.importTrack(0, data).ok());
+    REQUIRE(engine.track(0)->audio().length() == 4U);
+
+    // Reprise de peripherique (rebranchement casque) : le contenu et l'etat sont
+    // preserves, contrairement a un prepare() complet qui efface tout.
+    REQUIRE(engine.reconfigure(SampleRate::studio(), 128).ok());
+    CHECK(engine.trackCount() == 2U);
+    CHECK(engine.track(0)->track().state() == TrackState::Playing);
+    CHECK(engine.track(0)->audio().length() == 4U);
+
+    const std::array<float, 4> silence{};
+    std::vector<float> out(4, 0.0F);
+    engine.process(out, silence);
+    CHECK_NEAR(out[0], 0.5F, 1e-6);  // la boucle est toujours jouee apres reconfigure
+}
+
+TEST(LooperEngine, reconfigure_avant_prepare_est_rejete) {
+    LooperEngine engine;
+    CHECK(!engine.reconfigure(SampleRate::studio(), 64).ok());
+}
+
 TEST(LooperEngine, import_downmixe_le_stereo_en_mono) {
     LooperEngine engine;
     initEngine(engine, 1);

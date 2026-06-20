@@ -21,6 +21,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
 #include <span>
 #include <vector>
@@ -172,6 +173,14 @@ private:
     // bon marche : un store relaxe par bloc, aucune allocation.
     std::atomic<float> inputLevel_{0.0F};  ///< crete |monoIn| du dernier bloc capture
     std::atomic<int> lastBlockSize_{0};    ///< taille de bloc reellement vue au callback
+
+    // Watchdog audio (thread UI only) : detecte un callback audio fige (ex. echec
+    // de reroutage Oboe au branchement USB-C) et relance le peripherique. La relance
+    // est non destructive : prepareToPlay() conserve les pistes (cf. reconfigure()).
+    std::uint64_t lastSeenBlocks_ = 0;  ///< dernier compteur de blocs moteur observe
+    int audioStaleTicks_ = 0;           ///< ticks consecutifs sans nouveau bloc
+    int restartCooldownTicks_ = 0;      ///< ticks restants avant relance autorisee
+    bool audioWasAlive_ = false;        ///< vrai des qu'au moins un bloc a ete vu
 
     double sampleRate_ = 48000.0;
     bool effectsSetup_ = false;

@@ -754,11 +754,26 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         const std::size_t engineBlock = juce::jmax(blockSize, std::size_t{4096});
 
         if (const auto sr = SampleRate::create(rate); sr.ok()) {
-            static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, engineBlock));
+            // Distinguer la PREMIERE preparation d'une simple reprise de peripherique
+            // (rebranchement casque USB-C). JUCE rappelle prepareToPlay a chaque
+            // changement de peripherique : refaire un prepare() complet effacerait
+            // toutes les pistes enregistrees (tracks_.clear()). Si le moteur est deja
+            // pret a la meme frequence, on ne re-dimensionne que les tampons de
+            // traitement (reconfigure), en conservant les boucles.
+            const bool alreadyPrepared = engine_.trackCount() == kTrackCount;
+            const bool sameRate = engine_.transport().sampleRate().hz() == rate;
+            if (alreadyPrepared && sameRate) {
+                static_cast<void>(engine_.reconfigure(sr.value(), engineBlock));
+                juce::Logger::writeToLog("VoiceLive: reprise peripherique " + juce::String(rate) +
+                                         " Hz (pistes conservees), bloc " +
+                                         juce::String(static_cast<int>(blockSize)));
+            } else {
+                static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, engineBlock));
+                setupEffects();
+                juce::Logger::writeToLog("VoiceLive: audio pret " + juce::String(rate) +
+                                         " Hz, bloc " + juce::String(static_cast<int>(blockSize)));
+            }
             sampleRate_ = sampleRate;
-            setupEffects();
-            juce::Logger::writeToLog("VoiceLive: audio pret " + juce::String(rate) + " Hz, bloc " +
-                                     juce::String(static_cast<int>(blockSize)));
         } else {
             juce::Logger::writeToLog("VoiceLive: ERREUR frequence " + juce::String(rate));
         }
@@ -880,6 +895,52 @@ void MainComponent::timerCallback() {
         return;
 
     ++timerTickCount_;
+
+    // ── Watchdog audio (recuperation apres reroutage USB-C) ───────────────────
+    // Si le callback audio se fige (Oboe n'a pas su rouvrir le flux apres un
+    // branchement/debranchement de casque), le compteur de blocs moteur cesse
+    // d'avancer. On relance alors le peripherique. La relance est SURE :
+    //   - en mode Shared (cf. android.yml), la reouverture ne bloque plus sur le
+    //     spinlock exclusif d'Oboe ;
+    //   - prepareToPlay() appelle reconfigure() (et non prepare()) a frequence
+    //     egale, donc les pistes enregistrees sont conservees.
+    // Garde-fous anti-relance intempestive : on n'agit qu'apres avoir vu l'audio
+    // vivant au moins une fois, que la fenetre est affichee (pas en arriere-plan),
+    // et avec un cooldown.
+    {
+        const std::uint64_t blocks = engine_.diagnostics().blocksProcessed;
+        if (blocks != lastSeenBlocks_) {
+            lastSeenBlocks_ = blocks;
+            audioStaleTicks_ = 0;
+            audioWasAlive_ = true;
+        } else {
+            ++audioStaleTicks_;
+        }
+        if (restartCooldownTicks_ > 0) {
+            --restartCooldownTicks_;
+        }
+        const bool deviceRunning = deviceManager.getCurrentAudioDevice() != nullptr;
+        // 20 ticks @10 Hz = 2 s sans aucun bloc => audio reellement mort.
+        if (audioWasAlive_ && deviceRunning && isShowing() && audioStaleTicks_ >= 20 &&
+            restartCooldownTicks_ == 0) {
+            juce::Logger::writeToLog(
+                "Watchdog: audio fige (2s sans bloc), relance du peripherique");
+            // Terminer tout enregistrement en cours pour ne pas corrompre la prise.
+            if (anyTrackRecording_.load(std::memory_order_acquire)) {
+                for (std::size_t i = 0; i < kTrackCount; ++i) {
+                    if (const auto* p = engine_.track(i);
+                        p != nullptr && p->track().state() == TrackState::Recording) {
+                        postCommand(EngineCommand::Action::FinishRecording, i, 1.0F, false);
+                    }
+                }
+                anyTrackRecording_.store(false, std::memory_order_release);
+            }
+            audioStaleTicks_ = 0;
+            restartCooldownTicks_ = 50;  // 5 s avant une eventuelle nouvelle relance
+            deviceManager.restartLastAudioDevice();
+        }
+    }
+    // ──────────────────────────────────────────────────────────────────────────
 
     // On Android, scanAndroidOutputs() costs ~15 JNI bridge crossings per call.
     // Rate-limit to 1 Hz (every 10th tick) — fast enough for headphone hotplug.
