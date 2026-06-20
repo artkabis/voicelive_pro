@@ -165,6 +165,10 @@ private:
     std::vector<float> analysis_;
 
     std::atomic<bool> anyTrackRecording_{false};
+    // Indicateurs de diagnostic (ecrits par le thread audio, lus par l'UI). Tres
+    // bon marche : un store relaxe par bloc, aucune allocation.
+    std::atomic<float> inputLevel_{0.0F};  ///< crete |monoIn| du dernier bloc capture
+    std::atomic<int> lastBlockSize_{0};    ///< taille de bloc reellement vue au callback
 
     double sampleRate_ = 48000.0;
     bool effectsSetup_ = false;

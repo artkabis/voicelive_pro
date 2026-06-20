@@ -799,6 +799,15 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     const std::span<float> monoOut{monoOut_.data(), numSamples};
     channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
 
+    // Diagnostic bon marche : crete d'entree + taille de bloc, pour confirmer sur
+    // l'appareil que le micro capture bien (niveau > 0 pendant l'enregistrement).
+    float inPeak = 0.0F;
+    for (const float s : monoIn) {
+        inPeak = std::max(inPeak, std::abs(s));
+    }
+    inputLevel_.store(inPeak, std::memory_order_relaxed);
+    lastBlockSize_.store(static_cast<int>(numSamples), std::memory_order_relaxed);
+
     // Alimente la fenetre d'analyse glissante (accordeur + spectre). On gere aussi
     // le cas d'un bloc >= a la fenetre : on ne garde que les derniers echantillons.
     if (numSamples >= analysis_.size()) {
@@ -962,9 +971,17 @@ void MainComponent::updateDiagnostics() {
         text << "Audio : " << device->getName() << "  "
              << juce::String(device->getCurrentSampleRate(), 0) << " Hz / buffer "
              << device->getCurrentBufferSizeSamples() << "\n";
+        text << "Entrees actives : " << device->getActiveInputChannels().toString(2)
+             << "  bloc callback " << lastBlockSize_.load(std::memory_order_relaxed) << " ech\n";
     } else {
         text << "Audio : NON DEMARRE (verifier les permissions micro)\n";
     }
+
+    // Niveau d'entree micro : si ce niveau reste ~0 pendant l'enregistrement, le
+    // micro ne capte rien (permission refusee ou peripherique en sortie seule).
+    const float micLevel = inputLevel_.load(std::memory_order_relaxed);
+    text << "Micro (crete) : " << juce::String(micLevel, 4)
+         << (micLevel < 1e-4F ? "  [SILENCE - micro inactif ?]" : "  [signal OK]") << "\n";
 
     const auto diag = engine_.diagnostics();
     text << "Moteur : " << static_cast<int>(diag.trackCount) << " pistes, "
@@ -982,10 +999,15 @@ void MainComponent::updateDiagnostics() {
         if (processor == nullptr)
             continue;
         const auto& track = processor->track();
+        const auto& audio = processor->audio();
+        const std::size_t loopLen = audio.loopLength();
+        const std::size_t head = processor->playhead();
+        const double sr = sampleRate_ > 0.0 ? sampleRate_ : 48000.0;
         text << "  Piste " << static_cast<int>(i) + 1 << " : "
              << voicelive::core::toString(track.state()) << "  gain "
              << juce::String(track.gain().linear(), 2) << (track.isMuted() ? "  [MUTE]" : "")
-             << "  " << static_cast<int>(processor->audio().length() / 48000) << "s\n";
+             << "  boucle " << juce::String(static_cast<double>(loopLen) / sr, 1) << "s  tete "
+             << juce::String(static_cast<double>(head) / sr, 1) << "s\n";
     }
 
     text << "\n--- Journal (recent) ---\n" << appLogger_.snapshot();
@@ -1196,13 +1218,32 @@ void MainComponent::resized() {
 
 void MainComponent::recordOrFinish(std::size_t index) {
     const auto* processor = engine_.track(index);
-    if (processor != nullptr && processor->track().state() == TrackState::Recording) {
+    const TrackState state =
+        processor != nullptr ? processor->track().state() : TrackState::Empty;
+
+    if (state == TrackState::Recording) {
+        // Fin de la prise en cours -> la piste passe en lecture.
         postCommand(EngineCommand::Action::FinishRecording, index, 1.0F, false);
         anyTrackRecording_.store(false, std::memory_order_release);
-    } else {
-        postCommand(EngineCommand::Action::Record, index, 1.0F, false);
-        anyTrackRecording_.store(true, std::memory_order_release);
+        juce::Logger::writeToLog("Rec piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " : fin d'enregistrement (-> Playing)");
+        return;
     }
+
+    // Nouvelle prise. record() exige l'etat Empty : si la piste contient deja une
+    // boucle (Playing/Stopped/Overdubbing), on l'efface d'abord, sinon la commande
+    // Record etait rejetee en silence et le bouton restait bloque (anyTrackRecording_
+    // restait a true, coupant le haut-parleur). Le Clear rend record() toujours valide.
+    if (state != TrackState::Empty) {
+        postCommand(EngineCommand::Action::Clear, index, 1.0F, false);
+        juce::Logger::writeToLog("Rec piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " : nouvelle prise, ancien contenu efface (etat " +
+                                 voicelive::core::toString(state) + ")");
+    }
+    postCommand(EngineCommand::Action::Record, index, 1.0F, false);
+    anyTrackRecording_.store(true, std::memory_order_release);
+    juce::Logger::writeToLog("Rec piste " + juce::String(static_cast<int>(index) + 1) +
+                             " : debut d'enregistrement (-> Recording)");
 }
 
 void MainComponent::postCommand(EngineCommand::Action action, std::size_t track, float gain,
