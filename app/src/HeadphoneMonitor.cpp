@@ -39,8 +39,8 @@ void HeadphoneLed::paint(juce::Graphics& g) {
     g.drawEllipse(bounds.reduced(1.0F), 1.5F);
     g.setColour(juce::Colours::white.withAlpha(0.25F));
     g.fillEllipse(bounds.withWidth(bounds.getWidth() * 0.5F)
-                        .withHeight(bounds.getHeight() * 0.5F)
-                        .reduced(2.0F));
+                      .withHeight(bounds.getHeight() * 0.5F)
+                      .reduced(2.0F));
 }
 
 // ─── HeadphoneMonitor ─────────────────────────────────────────────────────────
@@ -66,6 +66,7 @@ struct HeadsetScan {
                           // 3=pas d'AudioManager, 4=getDevices null/exception
     int outputCount = 0;  // nb de peripheriques de sortie enumeres
     int firstType = -1;   // 1er type AudioDeviceInfo rencontre (sinon -1)
+    int foundType = -1;   // type qui a declenche found=true (-1 si aucun detecte)
 };
 
 // On Android, JUCE always reports "Android Audio" as device name regardless of
@@ -97,8 +98,8 @@ HeadsetScan scanAndroidOutputs() noexcept {
         scan.jniCode = 2;
         return scan;
     }
-    jmethodID currentApp = env->GetStaticMethodID(atClass, "currentApplication",
-                                                   "()Landroid/app/Application;");
+    jmethodID currentApp =
+        env->GetStaticMethodID(atClass, "currentApplication", "()Landroid/app/Application;");
     if (currentApp == nullptr) {
         clearPendingException(env);
         env->DeleteLocalRef(atClass);
@@ -117,8 +118,8 @@ HeadsetScan scanAndroidOutputs() noexcept {
 
     // context.getSystemService("audio")
     jclass ctxClass = env->GetObjectClass(appObj);
-    jmethodID getService = env->GetMethodID(ctxClass, "getSystemService",
-                                            "(Ljava/lang/String;)Ljava/lang/Object;");
+    jmethodID getService =
+        env->GetMethodID(ctxClass, "getSystemService", "(Ljava/lang/String;)Ljava/lang/Object;");
     env->DeleteLocalRef(ctxClass);
     if (getService == nullptr) {
         clearPendingException(env);
@@ -140,8 +141,8 @@ HeadsetScan scanAndroidOutputs() noexcept {
 
     // AudioManager.getDevices(GET_DEVICES_OUTPUTS = 2)
     jclass amClass = env->GetObjectClass(am);
-    jmethodID getDevices = env->GetMethodID(amClass, "getDevices",
-                                            "(I)[Landroid/media/AudioDeviceInfo;");
+    jmethodID getDevices =
+        env->GetMethodID(amClass, "getDevices", "(I)[Landroid/media/AudioDeviceInfo;");
     env->DeleteLocalRef(amClass);
     if (getDevices == nullptr) {
         clearPendingException(env);
@@ -149,7 +150,7 @@ HeadsetScan scanAndroidOutputs() noexcept {
         scan.jniCode = 4;
         return scan;
     }
-    auto* devices = static_cast<jobjectArray>(env->CallObjectMethod(am, getDevices, (jint) 2));
+    auto* devices = static_cast<jobjectArray>(env->CallObjectMethod(am, getDevices, (jint)2));
     env->DeleteLocalRef(am);
     if (clearPendingException(env) || devices == nullptr) {
         if (devices != nullptr) {
@@ -159,18 +160,19 @@ HeadsetScan scanAndroidOutputs() noexcept {
         return scan;
     }
 
-    constexpr jint kWiredHeadset    = 3;
+    constexpr jint kWiredHeadset = 3;
     constexpr jint kWiredHeadphones = 4;
-    constexpr jint kBluetoothA2dp   = 8;
-    constexpr jint kUsbDevice       = 11;
-    constexpr jint kUsbAccessory    = 12;
-    constexpr jint kUsbHeadset      = 22;
-    constexpr jint kBleHeadset      = 26;
-    constexpr jint kBleSpeaker      = 27;
+    constexpr jint kBluetoothA2dp = 8;
+    constexpr jint kUsbDevice = 11;
+    constexpr jint kUsbAccessory = 12;
+    constexpr jint kAuxLine = 21;  // adaptateur USB-C vers jack signale comme AUX
+    constexpr jint kUsbHeadset = 22;
+    constexpr jint kBleHeadset = 26;
+    constexpr jint kBleSpeaker = 27;
 
     const jsize count = env->GetArrayLength(devices);
     scan.outputCount = static_cast<int>(count);
-    for (jsize i = 0; i < count && !scan.found; ++i) {
+    for (jsize i = 0; i < count; ++i) {
         jobject dev = env->GetObjectArrayElement(devices, i);
         if (dev == nullptr) {
             continue;
@@ -187,10 +189,11 @@ HeadsetScan scanAndroidOutputs() noexcept {
             if (scan.firstType < 0) {
                 scan.firstType = static_cast<int>(t);
             }
-            if (t == kWiredHeadset || t == kWiredHeadphones || t == kUsbHeadset ||
-                t == kUsbDevice || t == kUsbAccessory || t == kBluetoothA2dp ||
-                t == kBleHeadset || t == kBleSpeaker) {
+            if (!scan.found && (t == kWiredHeadset || t == kWiredHeadphones || t == kUsbHeadset ||
+                                t == kUsbDevice || t == kUsbAccessory || t == kAuxLine ||
+                                t == kBluetoothA2dp || t == kBleHeadset || t == kBleSpeaker)) {
                 scan.found = true;
+                scan.foundType = static_cast<int>(t);
             }
         }
         env->DeleteLocalRef(dev);
@@ -224,8 +227,9 @@ void HeadphoneMonitor::poll(juce::AudioDeviceManager& mgr) noexcept {
     diagJniCode_.store(scan.jniCode, std::memory_order_relaxed);
     diagOutputCount_.store(scan.outputCount, std::memory_order_relaxed);
     diagFirstType_.store(scan.firstType, std::memory_order_relaxed);
+    diagFoundType_.store(scan.foundType, std::memory_order_relaxed);
     connected_.store(scan.found, std::memory_order_release);
-    (void) mgr;
+    (void)mgr;
 #else
     diagStatus_.store(1, std::memory_order_relaxed);
     // Desktop: heuristique sur le nom/type retournes par JUCE.
@@ -277,9 +281,11 @@ juce::String HeadphoneMonitor::diagnostic() const {
             codeText = "ok";
             break;
     }
-    return juce::String("casque JNI: ") + codeText + ", sorties=" +
-           juce::String(diagOutputCount_.load(std::memory_order_relaxed)) +
-           ", type1=" + juce::String(diagFirstType_.load(std::memory_order_relaxed));
+    const int foundType = diagFoundType_.load(std::memory_order_relaxed);
+    return juce::String("casque JNI: ") + codeText +
+           ", sorties=" + juce::String(diagOutputCount_.load(std::memory_order_relaxed)) +
+           ", type1=" + juce::String(diagFirstType_.load(std::memory_order_relaxed)) +
+           (foundType >= 0 ? (", found_type=" + juce::String(foundType)) : ", not_found");
 }
 
 void HeadphoneMonitor::changeListenerCallback(juce::ChangeBroadcaster* source) {

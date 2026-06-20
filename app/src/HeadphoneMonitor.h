@@ -59,6 +59,7 @@ private:
     std::atomic<int> diagJniCode_{0};
     std::atomic<int> diagOutputCount_{0};  // nb de peripheriques de sortie vus
     std::atomic<int> diagFirstType_{-1};   // 1er type AudioDeviceInfo rencontre
+    std::atomic<int> diagFoundType_{-1};   // type qui a declenche found=true, -1 si absent
 };
 
 }  // namespace voicelive::app

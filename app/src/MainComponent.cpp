@@ -169,8 +169,8 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
 
     // Tete de lecture (playhead) — ligne verte animee + horodatage
     if (playheadLen_ > 0 && audio_ != nullptr && audio_->length() > 0) {
-        const float xPh = static_cast<float>(playheadPos_) /
-                          static_cast<float>(playheadLen_) * static_cast<float>(w);
+        const float xPh = static_cast<float>(playheadPos_) / static_cast<float>(playheadLen_) *
+                          static_cast<float>(w);
         // Halo
         g.setColour(juce::Colour(0xFF00FF88).withAlpha(0.25F));
         g.fillRect(juce::jmax(0.0F, xPh - 1.5F), 0.0F, 4.0F, static_cast<float>(h));
@@ -326,6 +326,7 @@ MainComponent::MainComponent() {
     juce::Logger::setCurrentLogger(&appLogger_);
     juce::Logger::writeToLog("VoiceLive Pro demarre");
 
+    deviceManager.addChangeListener(this);
     headphoneMonitor_.attach(deviceManager);
     contentPane_.addAndMakeVisible(headphoneLed_);
 
@@ -543,6 +544,7 @@ MainComponent::MainComponent() {
 
 MainComponent::~MainComponent() {
     stopTimer();
+    deviceManager.removeChangeListener(this);
     headphoneMonitor_.detach(deviceManager);  // avant shutdownAudio pour eviter callbacks tardifs
     shutdownAudio();
     juce::Logger::setCurrentLogger(nullptr);
@@ -824,8 +826,7 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     engine_.process(monoOut, monoIn);
 
     // Lecture de la piste mix pre-rendue (AudioTransportSource gere la thread-safety)
-    if (mixTransport_.isPlaying() &&
-        mixTmpBuf_.getNumSamples() >= static_cast<int>(numSamples)) {
+    if (mixTransport_.isPlaying() && mixTmpBuf_.getNumSamples() >= static_cast<int>(numSamples)) {
         mixTmpBuf_.clear(0, 0, static_cast<int>(numSamples));
         juce::AudioSourceChannelInfo mixInfo(&mixTmpBuf_, 0, static_cast<int>(numSamples));
         mixTransport_.getNextAudioBlock(mixInfo);
@@ -849,6 +850,23 @@ void MainComponent::releaseResources() {
     mixTransport_.releaseResources();
 }
 
+// ─── ChangeListener (hotplug USB-C / routage audio) ──────────────────────────
+
+void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source) {
+    if (dynamic_cast<juce::AudioDeviceManager*>(source) == nullptr) {
+        return;
+    }
+    // Ignore si une relance est deja en attente ou en cooldown (evite les boucles
+    // car restartLastAudioDevice() lui-meme declenche un ChangeListener).
+    if (pendingAudioRestart_ || audioRestartCooldown_ > 0) {
+        return;
+    }
+    juce::Logger::writeToLog("Changement peripherique audio detecte (USB-C ?)");
+    blocksAtRestartRequest_ = static_cast<long long>(engine_.diagnostics().blocksProcessed);
+    pendingAudioRestart_ = true;
+    audioDeadTicks_ = 0;
+}
+
 // ─── Timer ────────────────────────────────────────────────────────────────────
 
 void MainComponent::timerCallback() {
@@ -856,6 +874,47 @@ void MainComponent::timerCallback() {
         return;
 
     ++timerTickCount_;
+
+    // ── Relance audio apres hotplug USB-C ─────────────────────────────────────
+    // Quand Oboe detecte un changement de routage (ex. casque USB-C branche), son
+    // callback interne peut declencher une assertion (juce_Oboe_android.cpp:484) qui
+    // coupe definitivement les callbacks audio. On detecte ce cas en comparant le
+    // compteur de blocs moteur 300ms apres le changement : s'il n'a pas avance, l'audio
+    // est mort et on force une relance propre via AudioDeviceManager.
+    if (audioRestartCooldown_ > 0) {
+        --audioRestartCooldown_;
+    }
+    if (pendingAudioRestart_) {
+        ++audioDeadTicks_;
+        if (audioDeadTicks_ >= 3) {
+            const auto curBlocks = static_cast<long long>(engine_.diagnostics().blocksProcessed);
+            if (curBlocks >= blocksAtRestartRequest_ + 30) {
+                // Audio vivant : JUCE/Oboe a recupere tout seul, pas besoin de relancer.
+                pendingAudioRestart_ = false;
+                audioDeadTicks_ = 0;
+                juce::Logger::writeToLog("Hotplug USB-C: audio recupere automatiquement");
+            } else if (audioDeadTicks_ >= 5) {
+                // Audio toujours mort 500ms apres le changement : relance forcee.
+                pendingAudioRestart_ = false;
+                audioDeadTicks_ = 0;
+                audioRestartCooldown_ = 30;  // 3s avant prochaine relance autorisee
+                juce::Logger::writeToLog("Hotplug USB-C: relance audio (blocs bloques a " +
+                                         juce::String(static_cast<int>(curBlocks)) + ")");
+                // Terminer tout enregistrement en cours pour ne pas corrompre la prise.
+                if (anyTrackRecording_.load(std::memory_order_acquire)) {
+                    for (std::size_t i = 0; i < kTrackCount; ++i) {
+                        if (const auto* p = engine_.track(i);
+                            p != nullptr && p->track().state() == TrackState::Recording) {
+                            postCommand(EngineCommand::Action::FinishRecording, i, 1.0F, false);
+                        }
+                    }
+                    anyTrackRecording_.store(false, std::memory_order_release);
+                }
+                deviceManager.restartLastAudioDevice();
+            }
+        }
+    }
+    // ─────────────────────────────────────────────────────────────────────────
 
     // On Android, scanAndroidOutputs() costs ~15 JNI bridge crossings per call.
     // Rate-limit to 1 Hz (every 10th tick) — fast enough for headphone hotplug.
@@ -888,8 +947,8 @@ void MainComponent::timerCallback() {
             const std::size_t len = proc->audio().loopLength();
             const auto state = proc->track().state();
             const bool isRecording = (state == TrackState::Recording);
-            const bool isActive = (state == TrackState::Playing ||
-                                   state == TrackState::Overdubbing || isRecording);
+            const bool isActive =
+                (state == TrackState::Playing || state == TrackState::Overdubbing || isRecording);
             if (isActive) {
                 // Repaint a chaque tick pour animer la tete de lecture. En
                 // enregistrement, la tete suit la fin du contenu capture (len),
@@ -918,11 +977,11 @@ void MainComponent::timerCallback() {
             const int posTenth = static_cast<int>(mixPosSec * 10.0) % 10;
             const int lenM = static_cast<int>(mixLenSec) / 60;
             const int lenS = static_cast<int>(mixLenSec) % 60;
-            mixTimeLabel_.setText(
-                juce::String(posM) + ":" + (posS < 10 ? "0" : "") + juce::String(posS) +
-                    "." + juce::String(posTenth) + " / " +
-                    juce::String(lenM) + ":" + (lenS < 10 ? "0" : "") + juce::String(lenS),
-                juce::dontSendNotification);
+            mixTimeLabel_.setText(juce::String(posM) + ":" + (posS < 10 ? "0" : "") +
+                                      juce::String(posS) + "." + juce::String(posTenth) + " / " +
+                                      juce::String(lenM) + ":" + (lenS < 10 ? "0" : "") +
+                                      juce::String(lenS),
+                                  juce::dontSendNotification);
 
             const std::size_t totalPcm = static_cast<std::size_t>(mixLenSec * sampleRate_);
             const std::size_t posPcm = static_cast<std::size_t>(mixPosSec * sampleRate_);
@@ -1218,8 +1277,7 @@ void MainComponent::resized() {
 
 void MainComponent::recordOrFinish(std::size_t index) {
     const auto* processor = engine_.track(index);
-    const TrackState state =
-        processor != nullptr ? processor->track().state() : TrackState::Empty;
+    const TrackState state = processor != nullptr ? processor->track().state() : TrackState::Empty;
 
     if (state == TrackState::Recording) {
         // Fin de la prise en cours -> la piste passe en lecture.
@@ -1302,16 +1360,17 @@ void MainComponent::detectAndSyncBpm(std::size_t index) {
                 "• Piste trop courte (< 2 temps)\n"
                 "• Signal trop faible ou sans structure rythmique\n"
                 "• Contenu purement mélodique sans attaques marquées");
-        juce::Logger::writeToLog("BPM detect piste " +
-                                 juce::String(static_cast<int>(index) + 1) + " : echec");
+        juce::Logger::writeToLog("BPM detect piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " : echec");
         return;
     }
 
     const float bpm = *detected;
-    const juce::String msg =
-        "Tempo détecté sur la piste " + juce::String(static_cast<int>(index) + 1) +
-        " : " + juce::String(bpm, 1) + " BPM\n\n"
-        "Appliquer ce tempo au transport ?";
+    const juce::String msg = "Tempo détecté sur la piste " +
+                             juce::String(static_cast<int>(index) + 1) + " : " +
+                             juce::String(bpm, 1) +
+                             " BPM\n\n"
+                             "Appliquer ce tempo au transport ?";
 
     juce::AlertWindow::showOkCancelBox(
         juce::AlertWindow::QuestionIcon, "BPM Sync", msg, "Appliquer", "Annuler", nullptr,
