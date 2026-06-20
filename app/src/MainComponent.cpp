@@ -896,17 +896,17 @@ void MainComponent::timerCallback() {
 
     ++timerTickCount_;
 
-    // ── Watchdog audio (recuperation apres reroutage USB-C) ───────────────────
-    // Si le callback audio se fige (Oboe n'a pas su rouvrir le flux apres un
-    // branchement/debranchement de casque), le compteur de blocs moteur cesse
-    // d'avancer. On relance alors le peripherique. La relance est SURE :
-    //   - en mode Shared (cf. android.yml), la reouverture ne bloque plus sur le
-    //     spinlock exclusif d'Oboe ;
-    //   - prepareToPlay() appelle reconfigure() (et non prepare()) a frequence
-    //     egale, donc les pistes enregistrees sont conservees.
-    // Garde-fous anti-relance intempestive : on n'agit qu'apres avoir vu l'audio
-    // vivant au moins une fois, que la fenetre est affichee (pas en arriere-plan),
-    // et avec un cooldown.
+    // ── Watchdog audio (recuperation apres reroutage USB-C ou echec de demarrage)
+    // Deux situations :
+    //   1) Audio vivant puis fige : Oboe n'a pas su rouvrir le flux apres un
+    //      branchement/debranchement de casque USB-C en mode Exclusive.
+    //   2) Echec au demarrage : Oboe a echoue lors de l'ouverture initiale
+    //      (jassert juce_Oboe_android.cpp:236), prepareToPlay() n'a jamais ete
+    //      appele, le moteur est vide (0 pistes). Le casque etait branche avant
+    //      le lancement de l'application. On retente l'ouverture apres 2 s.
+    // Dans les deux cas la relance est SURE en mode Shared (android.yml) : pas de
+    // blocage sur le spinlock exclusif d'Oboe. prepareToPlay() appelle reconfigure()
+    // quand le moteur est deja pret a la meme frequence, preservant les pistes.
     {
         const std::uint64_t blocks = engine_.diagnostics().blocksProcessed;
         if (blocks != lastSeenBlocks_) {
@@ -920,12 +920,13 @@ void MainComponent::timerCallback() {
             --restartCooldownTicks_;
         }
         const bool deviceRunning = deviceManager.getCurrentAudioDevice() != nullptr;
-        // 20 ticks @10 Hz = 2 s sans aucun bloc => audio reellement mort.
+        const bool engineReady = engine_.trackCount() == kTrackCount;
+
+        // Cas 1 : audio vivant puis fige (2 s sans bloc).
         if (audioWasAlive_ && deviceRunning && isShowing() && audioStaleTicks_ >= 20 &&
             restartCooldownTicks_ == 0) {
             juce::Logger::writeToLog(
                 "Watchdog: audio fige (2s sans bloc), relance du peripherique");
-            // Terminer tout enregistrement en cours pour ne pas corrompre la prise.
             if (anyTrackRecording_.load(std::memory_order_acquire)) {
                 for (std::size_t i = 0; i < kTrackCount; ++i) {
                     if (const auto* p = engine_.track(i);
@@ -936,7 +937,17 @@ void MainComponent::timerCallback() {
                 anyTrackRecording_.store(false, std::memory_order_release);
             }
             audioStaleTicks_ = 0;
-            restartCooldownTicks_ = 50;  // 5 s avant une eventuelle nouvelle relance
+            restartCooldownTicks_ = 50;
+            deviceManager.restartLastAudioDevice();
+        }
+
+        // Cas 2 : echec du demarrage initial (moteur non initialise apres 2 s).
+        if (!audioWasAlive_ && !engineReady && isShowing() && audioStaleTicks_ >= 20 &&
+            restartCooldownTicks_ == 0) {
+            juce::Logger::writeToLog(
+                "Watchdog: moteur non initialise (demarrage audio echoue), nouvelle tentative");
+            audioStaleTicks_ = 0;
+            restartCooldownTicks_ = 50;
             deviceManager.restartLastAudioDevice();
         }
     }
@@ -1302,6 +1313,11 @@ void MainComponent::resized() {
 // ─── Controle des pistes ──────────────────────────────────────────────────────
 
 void MainComponent::recordOrFinish(std::size_t index) {
+    if (engine_.trackCount() == 0) {
+        juce::Logger::writeToLog(
+            "Enregistrement impossible : moteur non initialise (audio non demarre)");
+        return;
+    }
     const auto* processor = engine_.track(index);
     const TrackState state = processor != nullptr ? processor->track().state() : TrackState::Empty;
 
@@ -1332,6 +1348,12 @@ void MainComponent::recordOrFinish(std::size_t index) {
 
 void MainComponent::postCommand(EngineCommand::Action action, std::size_t track, float gain,
                                 bool muted) {
+    if (engine_.trackCount() == 0) {
+        juce::Logger::writeToLog(juce::String("Commande ignoree (moteur non pret) : ") +
+                                 actionName(action) + " piste " +
+                                 juce::String(static_cast<int>(track) + 1));
+        return;
+    }
     EngineCommand command;
     command.action = action;
     command.track = track;
