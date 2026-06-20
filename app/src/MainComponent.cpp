@@ -54,6 +54,8 @@ const char* actionName(EngineCommand::Action action) {
             return "SetMuted";
         case EngineCommand::Action::SelectTrack:
             return "Select";
+        case EngineCommand::Action::Seek:
+            return "Seek";
     }
     return "?";
 }
@@ -120,6 +122,17 @@ void MainComponent::TrackWaveform::setPlayhead(std::size_t pos, std::size_t tota
     playheadSr_ = sr > 0.0 ? sr : 48000.0;
 }
 
+float MainComponent::TrackWaveform::pixelToNorm(float px) const noexcept {
+    const float span = viewEnd_ - viewStart_;
+    return viewStart_ + (px / static_cast<float>(juce::jmax(1, getWidth()))) * span;
+}
+
+float MainComponent::TrackWaveform::normToPixel(float norm) const noexcept {
+    const float span = viewEnd_ - viewStart_;
+    if (span < 1e-6F) return 0.0F;
+    return ((norm - viewStart_) / span) * static_cast<float>(getWidth());
+}
+
 void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
     const auto bounds = getLocalBounds().toFloat();
     g.setColour(juce::Colour(0xFF0D1117));
@@ -143,17 +156,23 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
     g.setColour(juce::Colours::grey.withAlpha(0.25F));
     g.drawHorizontalLine(static_cast<int>(midY), 2.0F, static_cast<float>(w) - 2.0F);
 
-    // Forme d'onde (peak-detection par pixel, avec cache pour eviter O(N) par frame).
+    // Forme d'onde (peak-detection par pixel, avec cache).
+    // Le cache est invalide si la longueur, la largeur ou la fenetre de zoom change.
     g.setColour(juce::Colour(0xFF00D4FF));
     const int drawW = w - 4;
     if (drawW > 0) {
-        if (len != cachedLoopLength_ || w != cachedWidth_) {
+        const bool cacheInvalid = (len != cachedLoopLength_ || w != cachedWidth_ ||
+                                   viewStart_ != cachedViewStart_ || viewEnd_ != cachedViewEnd_);
+        if (cacheInvalid) {
             peakCache_.resize(static_cast<std::size_t>(drawW), 0.0F);
+            const std::size_t sFirst = static_cast<std::size_t>(viewStart_ * static_cast<float>(len));
+            const std::size_t sLast  = static_cast<std::size_t>(viewEnd_   * static_cast<float>(len));
+            const std::size_t span   = sLast > sFirst ? sLast - sFirst : 0;
             for (int px = 0; px < drawW; ++px) {
-                const std::size_t sBegin =
-                    static_cast<std::size_t>(px) * len / static_cast<std::size_t>(drawW);
-                const std::size_t sEnd =
-                    static_cast<std::size_t>(px + 1) * len / static_cast<std::size_t>(drawW);
+                const std::size_t sBegin = sFirst + static_cast<std::size_t>(px) * span /
+                                           static_cast<std::size_t>(drawW);
+                const std::size_t sEnd   = sFirst + static_cast<std::size_t>(px + 1) * span /
+                                           static_cast<std::size_t>(drawW);
                 float peak = 0.0F;
                 for (std::size_t s = sBegin; s < sEnd && s < len; ++s) {
                     peak = std::max(peak, std::abs(audio_->sampleAt(s)));
@@ -162,6 +181,8 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
             }
             cachedLoopLength_ = len;
             cachedWidth_ = w;
+            cachedViewStart_ = viewStart_;
+            cachedViewEnd_ = viewEnd_;
         }
         for (int px = 0; px < drawW; ++px) {
             const float half =
@@ -173,34 +194,54 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
     }
 
     // Tete de lecture (playhead) — ligne verte animee + horodatage
-    if (playheadLen_ > 0 && audio_ != nullptr && audio_->length() > 0) {
-        const float xPh = static_cast<float>(playheadPos_) / static_cast<float>(playheadLen_) *
-                          static_cast<float>(w);
-        // Halo
-        g.setColour(juce::Colour(0xFF00FF88).withAlpha(0.25F));
-        g.fillRect(juce::jmax(0.0F, xPh - 1.5F), 0.0F, 4.0F, static_cast<float>(h));
-        // Ligne principale
-        g.setColour(juce::Colour(0xFF00FF88));
-        g.drawVerticalLine(static_cast<int>(xPh), 0.0F, static_cast<float>(h));
-        // Etiquette de position
-        const double posSec = static_cast<double>(playheadPos_) / playheadSr_;
-        const juce::String timeStr = juce::String(static_cast<int>(posSec)) + "." +
-                                     juce::String(static_cast<int>(posSec * 10.0) % 10) + "s";
-        g.setFont(juce::Font(juce::FontOptions{}.withHeight(10.0F)));
-        g.setColour(juce::Colours::white.withAlpha(0.9F));
-        const int labelX = static_cast<int>(xPh) + 3;
-        g.drawText(timeStr, labelX, 2, 38, 13, juce::Justification::left, false);
+    if (playheadLen_ > 0 && audio_->length() > 0) {
+        const float normPh =
+            static_cast<float>(playheadPos_) / static_cast<float>(playheadLen_);
+        const float xPh = normToPixel(normPh);
+        if (xPh >= 0.0F && xPh <= static_cast<float>(w)) {
+            g.setColour(juce::Colour(0xFF00FF88).withAlpha(0.25F));
+            g.fillRect(juce::jmax(0.0F, xPh - 1.5F), 0.0F, 4.0F, static_cast<float>(h));
+            g.setColour(juce::Colour(0xFF00FF88));
+            g.drawVerticalLine(static_cast<int>(xPh), 0.0F, static_cast<float>(h));
+            const double posSec = static_cast<double>(playheadPos_) / playheadSr_;
+            const juce::String timeStr = juce::String(static_cast<int>(posSec)) + "." +
+                                         juce::String(static_cast<int>(posSec * 10.0) % 10) + "s";
+            g.setFont(juce::Font(juce::FontOptions{}.withHeight(10.0F)));
+            g.setColour(juce::Colours::white.withAlpha(0.9F));
+            g.drawText(timeStr, static_cast<int>(xPh) + 3, 2, 38, 13,
+                       juce::Justification::left, false);
+        }
     }
 
-    // Surbrillance de la selection (zone orange semi-transparente)
+    // Surbrillance de la selection (zone orange semi-transparente).
+    // N'affiche que la partie visible dans la fenetre de zoom.
     if (selActive_ || std::abs(selEnd_ - selStart_) > 0.01F) {
-        const float x0 = std::min(selStart_, selEnd_) * static_cast<float>(w);
-        const float x1 = std::max(selStart_, selEnd_) * static_cast<float>(w);
-        g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.28F));
-        g.fillRect(x0, 0.0F, x1 - x0, static_cast<float>(h));
-        g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.85F));
-        g.drawVerticalLine(static_cast<int>(x0), 2.0F, static_cast<float>(h) - 2.0F);
-        g.drawVerticalLine(static_cast<int>(x1), 2.0F, static_cast<float>(h) - 2.0F);
+        const float normA = std::min(selStart_, selEnd_);
+        const float normB = std::max(selStart_, selEnd_);
+        const float x0 = juce::jlimit(0.0F, static_cast<float>(w), normToPixel(normA));
+        const float x1 = juce::jlimit(0.0F, static_cast<float>(w), normToPixel(normB));
+        if (x1 > x0) {
+            g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.28F));
+            g.fillRect(x0, 0.0F, x1 - x0, static_cast<float>(h));
+            g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.85F));
+            if (normA >= viewStart_) {
+                g.drawVerticalLine(static_cast<int>(x0), 2.0F, static_cast<float>(h) - 2.0F);
+            }
+            if (normB <= viewEnd_) {
+                g.drawVerticalLine(static_cast<int>(x1), 2.0F, static_cast<float>(h) - 2.0F);
+            }
+        }
+    }
+
+    // Indicateur de zoom : barre fine en bas montrant la fenetre visible.
+    if (viewEnd_ - viewStart_ < 0.999F) {
+        const float bH = 3.0F;
+        const float bY = static_cast<float>(h) - bH;
+        const float fW = static_cast<float>(w);
+        g.setColour(juce::Colours::grey.withAlpha(0.25F));
+        g.fillRect(0.0F, bY, fW, bH);
+        g.setColour(juce::Colour(0xFF00D4FF).withAlpha(0.7F));
+        g.fillRect(viewStart_ * fW, bY, (viewEnd_ - viewStart_) * fW, bH);
     }
 
     g.setColour(juce::Colours::grey.withAlpha(0.25F));
@@ -208,19 +249,59 @@ void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
 }
 
 void MainComponent::TrackWaveform::mouseDown(const juce::MouseEvent& e) {
-    selStart_ = juce::jlimit(0.0F, 1.0F, static_cast<float>(e.x) / static_cast<float>(getWidth()));
+    // Le 2e clic d'un double-clic a getNumberOfClicks()==2 ; laisser mouseDoubleClick
+    // le gerer — ne pas demarrer une selection qui serait aussitot effacee.
+    if (e.getNumberOfClicks() == 2) {
+        return;
+    }
+    selStart_ = pixelToNorm(static_cast<float>(e.x));
     selEnd_ = selStart_;
     selActive_ = false;
     repaint();
 }
 
 void MainComponent::TrackWaveform::mouseDrag(const juce::MouseEvent& e) {
-    selEnd_ = juce::jlimit(0.0F, 1.0F, static_cast<float>(e.x) / static_cast<float>(getWidth()));
+    selEnd_ = pixelToNorm(static_cast<float>(e.x));
     repaint();
 }
 
 void MainComponent::TrackWaveform::mouseUp(const juce::MouseEvent& /*e*/) {
-    selActive_ = std::abs(selEnd_ - selStart_) > 0.02F;
+    selActive_ = std::abs(selEnd_ - selStart_) > 0.01F * (viewEnd_ - viewStart_);
+    repaint();
+}
+
+void MainComponent::TrackWaveform::mouseDoubleClick(const juce::MouseEvent& e) {
+    // Double-clic : deplace la tete de lecture a la position cliquee.
+    const float normPos = juce::jlimit(0.0F, 1.0F, pixelToNorm(static_cast<float>(e.x)));
+    if (onSeek) {
+        onSeek(normPos);
+    }
+    // Efface la micro-selection creee par le mouseDown du 2e clic (si applicable).
+    selActive_ = false;
+    selStart_ = normPos;
+    selEnd_ = normPos;
+    repaint();
+}
+
+void MainComponent::TrackWaveform::mouseMagnify(const juce::MouseEvent& e, float scaleFactor) {
+    // scaleFactor > 1 = on ecarte les doigts (zoom avant), < 1 = on les rapproche.
+    if (scaleFactor <= 0.0F) {
+        return;
+    }
+    const float pivotNorm = pixelToNorm(static_cast<float>(e.x));
+    const float oldSpan = viewEnd_ - viewStart_;
+    const float newSpan = juce::jlimit(0.02F, 1.0F, oldSpan / scaleFactor);
+
+    // Conserve le point pivote sous le doigt.
+    const float ratio = (pivotNorm - viewStart_) / juce::jmax(1e-6F, oldSpan);
+    viewStart_ = juce::jlimit(0.0F, 1.0F - newSpan, pivotNorm - ratio * newSpan);
+    viewEnd_ = juce::jlimit(viewStart_ + 0.02F, 1.0F, viewStart_ + newSpan);
+
+    // Snap au dézoom complet
+    if (newSpan > 0.97F) {
+        viewStart_ = 0.0F;
+        viewEnd_ = 1.0F;
+    }
     repaint();
 }
 
@@ -365,6 +446,25 @@ MainComponent::MainComponent() {
         setupTrackStrip(i);
         contentPane_.addAndMakeVisible(waveforms_[i]);
         setupFxPanel(i);
+
+        // Double-clic sur la waveform : deplace la tete de lecture.
+        waveforms_[i].onSeek = [this, i](float normPos) {
+            if (const auto* proc = engine_.track(i); proc != nullptr) {
+                const std::size_t loopLen = proc->audio().loopLength();
+                if (loopLen == 0) {
+                    return;
+                }
+                const std::size_t targetSample =
+                    static_cast<std::size_t>(normPos * static_cast<float>(loopLen));
+                EngineCommand cmd;
+                cmd.action = EngineCommand::Action::Seek;
+                cmd.track = i;
+                cmd.position = targetSample;
+                engine_.post(cmd);
+                juce::Logger::writeToLog("Seek piste " + juce::String(static_cast<int>(i) + 1) +
+                                         " -> " + juce::String(static_cast<int>(targetSample)));
+            }
+        };
 
         cutBtns_[i].setButtonText("Cut Sel");
         cutBtns_[i].onClick = [this, i] { cutSelection(i); };

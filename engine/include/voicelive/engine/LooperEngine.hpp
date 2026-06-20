@@ -48,12 +48,14 @@ struct EngineCommand {
         SetGain,
         SetMuted,
         SelectTrack,
+        Seek,  ///< Deplace la tete de lecture : position en echantillons (champ position).
     };
 
     Action action = Action::Stop;
     std::size_t track = 0;
-    float gain = 1.0F;   ///< Pour SetGain (linéaire).
-    bool muted = false;  ///< Pour SetMuted.
+    float gain = 1.0F;          ///< Pour SetGain (lineaire).
+    bool muted = false;         ///< Pour SetMuted.
+    std::size_t position = 0;   ///< Pour Seek (en echantillons).
 };
 
 /// Instantané d'état du moteur, pour le diagnostic (panneau Diag de l'app).

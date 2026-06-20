@@ -101,6 +101,9 @@ core::Status LooperEngine::applyCommand(const EngineCommand& command) {
         case Cmd::SetMuted:
             processor.setMuted(command.muted);
             return core::Status::success();
+        case Cmd::Seek:
+            processor.setPlayhead(command.position);
+            return core::Status::success();
         case Cmd::SelectTrack:
             break;  // déjà traité plus haut
     }

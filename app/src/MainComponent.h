@@ -22,6 +22,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <vector>
@@ -66,7 +67,7 @@ private:
         juce::ToggleButton muteButton;
     };
 
-    /// Mini-waveform d'une piste avec selection interactive et tete de lecture.
+    /// Mini-waveform d'une piste avec selection interactive, zoom et tete de lecture.
     struct TrackWaveform final : public juce::Component {
         void setAudio(const voicelive::engine::LoopAudio* audio) noexcept;
         void setPlayhead(std::size_t pos, std::size_t totalLen, double sr) noexcept;
@@ -74,19 +75,34 @@ private:
         void mouseDown(const juce::MouseEvent& e) override;
         void mouseUp(const juce::MouseEvent& e) override;
         void mouseDrag(const juce::MouseEvent& e) override;
+        void mouseDoubleClick(const juce::MouseEvent& e) override;
+        void mouseMagnify(const juce::MouseEvent& e, float scaleFactor) override;
         [[nodiscard]] bool hasSelection() const noexcept;
         [[nodiscard]] std::pair<float, float> selectionNormalized() const noexcept;
         void clearSelection() noexcept;
 
+        /// Appelee a chaque double-clic avec la position normalisee [0,1] dans la boucle.
+        std::function<void(float normPos)> onSeek;
+
     private:
+        /// Convertit une position pixel [0,w] en position normalisee [0,1] dans la boucle.
+        [[nodiscard]] float pixelToNorm(float px) const noexcept;
+        /// Convertit une position normalisee [0,1] en position pixel [0,w].
+        [[nodiscard]] float normToPixel(float norm) const noexcept;
+
         const voicelive::engine::LoopAudio* audio_ = nullptr;
         float selStart_ = 0.0F;
         float selEnd_ = 0.0F;
         bool selActive_ = false;
-        // Peak cache: rebuilt only when loopLength or component width changes.
+        // Fenetre de zoom : portion de la boucle affichee ([0,1] = pas de zoom).
+        float viewStart_ = 0.0F;
+        float viewEnd_ = 1.0F;
+        // Peak cache: rebuilt when loopLength, width, or zoom window changes.
         mutable std::vector<float> peakCache_;
         mutable std::size_t cachedLoopLength_ = 0;
         mutable int cachedWidth_ = 0;
+        mutable float cachedViewStart_ = -1.0F;
+        mutable float cachedViewEnd_ = -1.0F;
         // Playhead (message thread only)
         std::size_t playheadPos_ = 0;
         std::size_t playheadLen_ = 0;
