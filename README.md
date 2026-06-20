@@ -111,8 +111,8 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
   l'enregistrement sauf si un casque est détecté (jack / USB-C). Sur Android, la
   détection passe par `AudioManager.getDevices()` (JNI), JUCE ne remontant pas le
   matériel réel. Voyant LED d'état dans l'UI.
-- **Basse latence Android** : buffer 256 frames (chemin AAudio rapide, ~5 ms à
-  48 kHz), Release `-O3 -ffast-math`.
+- **Basse latence Android** : buffer négocié par Oboe (chemin AAudio rapide),
+  Release `-O3 -ffast-math`.
 - Pipelines CI : **binaire desktop** et **APK Android (debug)** en artefacts.
 
 ### 🛡️ Robustesse transverse
@@ -206,7 +206,7 @@ Le build Android ne se fait pas en local sans NDK ; détails dans
       d'effets, EQ de mastering, spectre, accordeur).
 - [x] **Sauvegarde/chargement de projet** (`core::project_io`) + export WAV.
 - [x] **Détection casque** (jack / USB-C via JNI Android) + anti-larsen.
-- [x] **Optimisation latence Android** (buffer 256, AAudio, `-O3 -ffast-math`).
+- [x] **Optimisation latence Android** (buffer Oboe/AAudio, `-O3 -ffast-math`).
 - [ ] Cible **web** (cœur en WebAssembly + AudioWorklet).
 - [ ] Signature **release** Android (Play Store) + symboles natifs en artefact CI.
 

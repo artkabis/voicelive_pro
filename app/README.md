@@ -61,8 +61,11 @@ vert = casque, rouge = haut-parleur).
 
 ## Latence (Android)
 
-- Buffer **256 frames** demandé sur Android pour engager le chemin basse latence
-  AAudio (~5 ms à 48 kHz).
+- La latence est laissée à **Oboe** (back-end JUCE Android), qui négocie
+  automatiquement le buffer basse latence du périphérique. ⚠️ Ne **pas** forcer
+  `setAudioDeviceSetup(bufferSize=…)` après `setAudioChannels` : sur Android cela
+  rouvre le périphérique en **sortie seule** (perte du micro → enregistrement
+  cassé) et la taille demandée est ignorée.
 - Release compilé en `optimisation=3` + `-ffast-math -ftree-vectorize`
   (cf. `VoiceLivePro.jucer`).
 

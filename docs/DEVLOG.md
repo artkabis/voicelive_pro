@@ -5,6 +5,37 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-19 — Correctifs sur appareil : enregistrement & détection USB-C
+
+Tests sur appareil réel (APK) : deux régressions visibles, corrigées.
+
+### 1. Enregistrement cassé (piste restait `Empty`)
+- **Cause** : le constructeur forçait
+  `setAudioDeviceSetup(bufferSize=256, treatAsChosen=true)` juste après
+  `setAudioChannels(2,2)`. Sur Android, cela **rouvrait le périphérique en sortie
+  seule** (device affiché `System Default (Output)`, **micro perdu** → plus rien à
+  enregistrer) et déclenchait un **second `prepareToPlay`** (visible : double
+  `audio pret` dans le journal). La taille 256 était de toute façon **ignorée**
+  (buffer resté à 1920).
+- **Fix** : suppression du bloc. Oboe négocie déjà le buffer basse latence ; la
+  latence reste gérée par Oboe + flags Release `-O3 -ffast-math`.
+
+### 2. Casque USB-C jamais détecté
+- **Cause** : **mauvaise constante** `AudioDeviceInfo` — `TYPE_USB_HEADSET`
+  vaut **22**, pas 8 (8 = `TYPE_BLUETOOTH_A2DP`). Un casque USB-C qui se déclare
+  en type 22 n'était donc jamais reconnu.
+- **Fix** : constantes corrigées (3, 4, 8, 11, 12, **22**, 26, 27) couvrant
+  jack, USB, Bluetooth et BLE.
+
+### Diagnostic ajouté
+- `HeadphoneMonitor::diagnostic()` expose dans le **panneau Diag** le résultat de
+  la dernière sonde JNI : code (`pas de contexte app` / `pas d'AudioManager` /
+  `getDevices KO` / `ok`), nombre de sorties énumérées, et le 1ᵉʳ type rencontré.
+  Un échec silencieux (contexte null, etc.) est désormais visible sur l'appareil
+  sans débogueur.
+
+---
+
 ## 2026-06-19 — Détection casque USB-C (Android), latence & durcissement CI
 
 ### Contexte
