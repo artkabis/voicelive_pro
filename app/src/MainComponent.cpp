@@ -1258,9 +1258,9 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
         std::fill(monoOut.begin(), monoOut.end(), 0.0F);
     }
 
-    // Mode split avec AndroidAudioOutput : le son passe par AudioTrack (→ casque USB
-    // via la politique de routage Android), pas par Oboe/JUCE. On silencieux le buffer
-    // JUCE pour ne pas faire sortir l'audio par le haut-parleur integre.
+    // Sortie : en mode split, JUCE est en duplex sur le casque USB → la sortie part
+    // directement vers l'USB via Oboe (pas d'AudioTrack sur ce materiel). Le chemin
+    // AudioTrack est conserve en garde defensive si jamais il etait demarre ailleurs.
     if (splitMicMode_ && androidAudioOutput_.isRunning()) {
         androidAudioOutput_.writeSamples(monoOut_.data(), static_cast<int>(numSamples));
         bufferToFill.buffer->clear(bufferToFill.startSample, bufferToFill.numSamples);
@@ -1566,21 +1566,15 @@ void MainComponent::updateDiagnostics() {
     text << "Micro (crete) : " << juce::String(micLevel, 4)
          << (micLevel < 1e-4F ? "  [SILENCE - micro inactif ?]" : "  [signal OK]") << "\n";
 
-    // Mode split : etat de la capture micro telephone independante (AudioRecord).
+    // Mode split : sortie = JUCE duplex USB (Oboe), entree = micro integre (AudioRecord).
     // drop = consommateur en retard (FIFO plein) ; underrun = producteur en retard
     // (FIFO vide -> silence). Des valeurs qui grimpent en continu signalent un
     // probleme de cadence ; quelques unites au demarrage sont normales.
     if (splitMicMode_) {
         const bool arActive = micCapture_.isRunning();
-        const bool outActive = androidAudioOutput_.isRunning();
         const juce::String inputChoice = inputDeviceBox_.getText();
-        if (outActive) {
-            text << "Mode split : sortie=AudioTrack(STREAM_MUSIC→USB auto)" << " - "
-                 << (outActive ? "ACTIF" : "ARRETE") << "\n";
-            text << "  Sortie AudioTrack : drop="
-                 << juce::String(androidAudioOutput_.droppedSamples())
-                 << "  underrun=" << juce::String(androidAudioOutput_.underrunSamples()) << "\n";
-        }
+        const auto curSetup = deviceManager.getAudioDeviceSetup();
+        text << "Mode split : sortie=JUCE duplex USB ('" << curSetup.outputDeviceName << "')\n";
         if (arActive) {
             text << "Mode split : entree=AudioRecord (micro telephone) - ACTIF\n";
             text << "  Capture micro : drop=" << juce::String(micCapture_.droppedSamples())
@@ -1766,14 +1760,13 @@ void MainComponent::applySplitMicMode(int mode) {
 
     if (wantSplit) {
         splitMicMode_ = true;
-        // On NE passe PAS en sortie seule (setAudioChannels(2,0)) : sur cet appareil
-        // Oboe n'arrive pas a maintenir un flux output-only (jassert :484, callback
-        // gele -> aucune lecture du FIFO -> drops massifs). On garde donc JUCE en
-        // DUPLEX (2,2) sur le chemin deja eprouve (sortie casque OK en mode normal),
-        // et on capture le micro TELEPHONE en parallele via AudioRecord. L'entree
-        // JUCE (micro du casque) est simplement ignoree dans getNextAudioBlock.
-        // On ne touche pas au peripherique courant : la selection de sortie est
-        // preservee (et le watchdog est neutralise en split+AudioRecord, cf. timerCallback).
+        // On garde JUCE en DUPLEX (2,2) : sur cet appareil Oboe ne maintient pas un
+        // flux output-only (jassert :484, callback gele -> drops massifs). JUCE est
+        // bascule sur le casque USB en duplex (sortie+entree meme HAL, voir lambda
+        // ci-dessous) et capte le micro TELEPHONE en parallele via AudioRecord.
+        // L'entree USB de JUCE est simplement ignoree dans getNextAudioBlock.
+        // Le watchdog est neutralise en split+AudioRecord (cf. timerCallback) le temps
+        // que la bascule USB + le demarrage AudioRecord se stabilisent.
         //
         // La combo entree RESTE ACTIVEE : l'utilisateur peut voir et choisir sa source.
         // On appelle refreshDeviceList() IMMEDIATEMENT pour deux raisons :
@@ -1788,15 +1781,17 @@ void MainComponent::applySplitMicMode(int mode) {
         inputDeviceBox_.setText("Micro telephone (AudioRecord)", juce::dontSendNotification);
         refreshDeviceList();  // etablit "Micro telephone" comme item selectionne + guard
 
-        // AudioTrack et AudioRecord sont lances en DIFFERE pour deux raisons :
-        // 1. Eviter Oboe:517 : AudioTrack doit demarrer APRES que JUCE/Oboe ait
-        //    quitte le casque USB. Demarrer AudioTrack pendant qu'Oboe occupe aussi
-        //    USB provoque un conflit HAL -> freeze immediat.
-        // 2. Eviter la reentrancee de la queue JUCE 8 : setAudioDeviceSetup() pompe
-        //    la queue pendant l'appel (timer refreshDeviceList, callAsync guards),
-        //    ce qui peut corrompre isRefreshingDeviceList_ avant la fin du bloc.
-        // Le callAsync garantit que tous les messages en file sont traites avant de
-        // toucher le peripherique.
+        // Strategie split (validee sur Samsung A26 + HyperX Cloud III) :
+        //   - JUCE ouvre le casque USB en DUPLEX (sortie USB + entree USB, MEME HAL).
+        //     C'est la seule config Oboe stable sur ce materiel : les peripheriques
+        //     integres nommes ("built-in speaker"...) ne sont PAS ouvrables ("No such
+        //     device"), et le duplex cross-HAL (USB out + integre in) gele (Oboe:236).
+        //   - JUCE pilote le moteur et SORT le son vers l'USB directement (pas d'AudioTrack).
+        //   - L'entree USB de JUCE est IGNOREE dans getNextAudioBlock ; AudioRecord
+        //     capte le micro INTEGRE du telephone (le vrai but du mode split).
+        // setAudioDeviceSetup() est DIFFERE (callAsync) pour eviter la reentrancee de
+        // la queue JUCE 8 : il pompe la queue pendant l'appel (timer refreshDeviceList,
+        // callAsync guards), ce qui peut corrompre isRefreshingDeviceList_.
         juce::MessageManager::callAsync([this]() {
             if (!splitMicMode_)
                 return;
@@ -1804,75 +1799,92 @@ void MainComponent::applySplitMicMode(int mode) {
             if (type == nullptr)
                 return;
             const auto curSetup = deviceManager.getAudioDeviceSetup();
-            const bool onUsb = curSetup.outputDeviceName.containsIgnoreCase("USB") ||
-                               curSetup.outputDeviceName.containsIgnoreCase("Default");
-            bool juceOnBuiltIn = !onUsb;
-            if (onUsb) {
-                const auto outputNames = type->getDeviceNames(false);
-                juce::String allNames;
-                for (const auto& n : outputNames)
-                    allNames << "'" << n << "' ";
-                VLOG("Mode split (defere): periph. sortie disponibles: " + allNames);
-                // Tenter chaque peripherique integre dans l'ordre jusqu'au premier succes.
-                // Un seul echec ("No such device" lors d'un redemarrage concurrent du
-                // watchdog) ne doit pas bloquer les autres candidats disponibles.
-                isRefreshingDeviceList_ = true;
-                for (const auto& name : outputNames) {
-                    if (name.containsIgnoreCase("USB") || name.containsIgnoreCase("Default") ||
-                        name.isEmpty())
-                        continue;
+
+            // Localiser le casque USB cote sortie ET entree (meme peripherique → duplex
+            // meme-HAL). On le rend explicite plutot que de dependre de "System Default"
+            // (qui peut router differemment l'entree et la sortie → cross-HAL → freeze).
+            juce::String usbOut, usbIn;
+            for (const auto& n : type->getDeviceNames(false))
+                if (n.containsIgnoreCase("USB")) {
+                    usbOut = n;
+                    break;
+                }
+            for (const auto& n : type->getDeviceNames(true))
+                if (n.containsIgnoreCase("USB")) {
+                    usbIn = n;
+                    break;
+                }
+
+            if (usbOut.isNotEmpty()) {
+                const juce::String wantIn = usbIn.isNotEmpty() ? usbIn : usbOut;
+                if (curSetup.outputDeviceName != usbOut || curSetup.inputDeviceName != wantIn) {
+                    isRefreshingDeviceList_ = true;
                     auto newSetup = curSetup;
-                    newSetup.outputDeviceName = name;
-                    newSetup.inputDeviceName = name;
+                    newSetup.outputDeviceName = usbOut;
+                    newSetup.inputDeviceName = wantIn;
                     newSetup.sampleRate = 0;
                     newSetup.bufferSize = 0;
                     newSetup.useDefaultInputChannels = true;
                     newSetup.useDefaultOutputChannels = true;
                     const auto err = deviceManager.setAudioDeviceSetup(newSetup, true);
-                    juce::Logger::writeToLog("Mode split (defere): JUCE -> '" + name + "'" +
+                    juce::Logger::writeToLog("Mode split: JUCE -> USB duplex '" + usbOut + "'" +
                                              (err.isNotEmpty() ? " ERREUR: " + err : " OK"));
-                    if (err.isEmpty()) {
-                        juceOnBuiltIn = true;
-                        break;
-                    }
-                }
-                juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
-                if (!juceOnBuiltIn)
-                    juce::Logger::writeToLog(
-                        "Mode split (defere): tous les periph. integres ont echoue");
-            }
-            if (!juceOnBuiltIn) {
-                juce::Logger::writeToLog(
-                    "Mode split (defere): JUCE reste sur USB, arret pour eviter Oboe:517");
-                return;
-            }
-            if (!androidAudioOutput_.isRunning()) {
-                if (androidAudioOutput_.start(static_cast<int>(sampleRate_))) {
-                    juce::Logger::writeToLog(
-                        "AndroidAudioOutput: AudioTrack STREAM_MUSIC demarre " +
-                        juce::String(static_cast<int>(sampleRate_)) + " Hz (routage USB auto)");
+                    juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
                 } else {
-                    juce::Logger::writeToLog("AndroidAudioOutput: demarrage echoue");
+                    VLOG("Mode split: JUCE deja sur USB duplex '" + usbOut + "'");
                 }
+            } else {
+                juce::Logger::writeToLog(
+                    "Mode split: aucun peripherique USB trouve, JUCE inchange");
             }
+
+            // Demarrer la capture du micro INTEGRE (AudioRecord). Aucun AudioTrack :
+            // la sortie passe par JUCE/Oboe (duplex USB) directement.
             if (!micCapture_.isRunning()) {
-                if (micCapture_.start(static_cast<int>(sampleRate_))) {
+                if (micCapture_.start(static_cast<int>(sampleRate_)))
                     juce::Logger::writeToLog("AndroidMicCapture: capture micro telephone " +
                                              juce::String(static_cast<int>(sampleRate_)) + " Hz");
-                } else {
+                else
                     juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
-                }
             }
             juce::Logger::writeToLog(
-                "Mode split: sortie AudioTrack(USB auto) + entree AudioRecord(micro integre)");
+                "Mode split: JUCE USB duplex (sortie) + AudioRecord (micro integre)");
         });
     } else {
-        androidAudioOutput_.stop();
         micCapture_.stop();
+        androidAudioOutput_.stop();  // inutilise sur ce materiel, arret defensif
         splitMicMode_ = false;
         inputDeviceBox_.setEnabled(true);
-        // JUCE est deja en duplex : rien a reconfigurer. On rafraichit juste la liste.
-        refreshDeviceList();
+
+        // En split, JUCE etait epingle sur le casque USB. A la desactivation (souvent
+        // un debranchement USB), ce peripherique n'existe plus → on ramene JUCE sur
+        // "System Default" pour eviter un device ferme jusqu'au prochain watchdog (~2 s).
+        // Differe (callAsync) pour la meme raison de reentrancee de queue JUCE 8.
+        juce::MessageManager::callAsync([this]() {
+            if (splitMicMode_)
+                return;  // re-active entre temps : ne pas perturber
+            auto* type = deviceManager.getCurrentDeviceTypeObject();
+            if (type == nullptr)
+                return;
+            const auto curSetup = deviceManager.getAudioDeviceSetup();
+            if (curSetup.outputDeviceName.containsIgnoreCase("USB") ||
+                curSetup.inputDeviceName.containsIgnoreCase("USB") ||
+                deviceManager.getCurrentAudioDevice() == nullptr) {
+                isRefreshingDeviceList_ = true;
+                auto newSetup = curSetup;
+                newSetup.outputDeviceName = "System Default (Output)";
+                newSetup.inputDeviceName = "System Default (Input)";
+                newSetup.sampleRate = 0;
+                newSetup.bufferSize = 0;
+                newSetup.useDefaultInputChannels = true;
+                newSetup.useDefaultOutputChannels = true;
+                const auto err = deviceManager.setAudioDeviceSetup(newSetup, true);
+                juce::Logger::writeToLog(juce::String("Mode split off: JUCE -> System Default") +
+                                         (err.isNotEmpty() ? " ERREUR: " + err : " OK"));
+                juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
+            }
+            refreshDeviceList();
+        });
         juce::Logger::writeToLog("Mode split: desactive, retour entree/sortie JUCE normale");
     }
 }
@@ -1903,114 +1915,27 @@ void MainComponent::applyDeviceSelection() {
         const bool usingAudioRecord = (inputDeviceBox_.getText() == kAudioRecordInput);
 
         if (usingAudioRecord) {
+            // Mode split nominal : JUCE en DUPLEX sur le casque USB (sortie USB +
+            // entree USB ignoree), AudioRecord capte le micro INTEGRE. Pas d'AudioTrack.
+            // On force inName = outName (duplex meme-HAL) : la seule config Oboe stable
+            // sur ce materiel. Les peripheriques integres nommes ne s'ouvrent pas.
             if (!micCapture_.isRunning()) {
                 micCapture_.start(static_cast<int>(sampleRate_));
             }
-            if (!androidAudioOutput_.isRunning()) {
-                androidAudioOutput_.start(static_cast<int>(sampleRate_));
-            }
-
-            // AndroidAudioOutput gere la sortie USB via AudioTrack(STREAM_MUSIC).
-            // Si l'utilisateur selectionne un peripherique USB, on redirige JUCE vers
-            // le peripherique integre pour eviter qu'Oboe ne touche le casque USB
-            // (source des freezes Oboe:236 et Oboe:517). outName est modifie pour que
-            // setup.outputDeviceName pointe vers le peripherique integre.
-            if (outName.containsIgnoreCase("USB") || outName.containsIgnoreCase("Default")) {
-                auto* type = deviceManager.getCurrentDeviceTypeObject();
-                if (type != nullptr) {
-                    for (const auto& name : type->getDeviceNames(false)) {
-                        if (!name.containsIgnoreCase("USB") &&
-                            !name.containsIgnoreCase("Default") && !name.isEmpty()) {
-                            VLOG(
-                                "applyDeviceSelection (split+AudioRecord): USB/Default intercepte "
-                                "'" +
-                                outName + "' -> built-in '" + name + "' (sortie via AudioTrack)");
-                            outName = name;
-                            break;
-                        }
-                    }
-                }
-            }
-
-            if (outName == setup.outputDeviceName)
-                return;
             inName = outName;
-            VLOG("applyDeviceSelection (split+AudioRecord): sortie -> '" + outName + "'");
-        } else {
-            // Si le mode split a ete active automatiquement (hotplug USB),
-            // un onChange JUCE peut glisser la combo vers un peripherique JUCE
-            // suite a une recuperation watchdog. On force le retour en mode
-            // AudioRecord et on relance AudioTrack si JUCE est sur un peripherique
-            // integre, sans passer par le chemin JUCE-input qui arrete AudioTrack.
-            if (splitModeAutoActivated_) {
-                inputDeviceBox_.setText("Micro telephone (AudioRecord)",
-                                        juce::dontSendNotification);
-                const bool juceOnBuiltIn = !setup.outputDeviceName.containsIgnoreCase("USB") &&
-                                           !setup.outputDeviceName.containsIgnoreCase("Default") &&
-                                           !setup.outputDeviceName.isEmpty();
-                VLOG("applyDeviceSelection (split auto intercept): JUCE out='" +
-                     setup.outputDeviceName +
-                     "' juceOnBuiltIn=" + juce::String((int)juceOnBuiltIn));
-                if (juceOnBuiltIn) {
-                    if (!androidAudioOutput_.isRunning()) {
-                        if (androidAudioOutput_.start(static_cast<int>(sampleRate_)))
-                            juce::Logger::writeToLog(
-                                "applyDeviceSelection (split auto): AudioTrack demarre " +
-                                juce::String(static_cast<int>(sampleRate_)) + " Hz");
-                        else
-                            juce::Logger::writeToLog(
-                                "applyDeviceSelection (split auto): AudioTrack echoue");
-                    }
-                    if (!micCapture_.isRunning()) {
-                        if (micCapture_.start(static_cast<int>(sampleRate_)))
-                            juce::Logger::writeToLog(
-                                "applyDeviceSelection (split auto): AudioRecord demarre " +
-                                juce::String(static_cast<int>(sampleRate_)) + " Hz");
-                        else
-                            juce::Logger::writeToLog(
-                                "applyDeviceSelection (split auto): AudioRecord echoue");
-                    }
-                }
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
                 return;
-            }
-
-            // L'utilisateur a choisi une vraie entree JUCE en mode split.
-            // On arrete AudioRecord et AudioTrack, JUCE gere les deux directions.
-            // Attention : cela peut echouer (cross-HAL) et geler le callback ;
-            // le watchdog est actif dans ce sous-mode (micCapture_ non running).
+            VLOG("applyDeviceSelection (split+AudioRecord): JUCE duplex sortie='" + outName + "'");
+        } else {
+            // L'utilisateur a choisi une vraie entree JUCE en mode split : JUCE gere
+            // les deux directions, on arrete AudioRecord. Si entree integree + sortie
+            // USB (cross-HAL), Oboe peut geler ; le watchdog est actif (micCapture arrete).
             if (micCapture_.isRunning()) {
                 micCapture_.stop();
                 juce::Logger::writeToLog(
                     "applyDeviceSelection (split+JUCE input): arret AudioRecord");
             }
-            if (androidAudioOutput_.isRunning()) {
-                androidAudioOutput_.stop();
-                juce::Logger::writeToLog(
-                    "applyDeviceSelection (split+JUCE input): arret AudioTrack");
-            }
             inName = inputDeviceBox_.getText();
-            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
-                return;
-
-            // Eviter Oboe:517 : si la sortie est USB ou System Default (qui route vers
-            // USB), la rediriger vers le peripherique integre. Meme garde que le chemin
-            // AudioRecord pour eviter un conflit HAL.
-            if (outName.containsIgnoreCase("USB") || outName.containsIgnoreCase("Default")) {
-                auto* type = deviceManager.getCurrentDeviceTypeObject();
-                if (type != nullptr) {
-                    for (const auto& name : type->getDeviceNames(false)) {
-                        if (!name.containsIgnoreCase("USB") &&
-                            !name.containsIgnoreCase("Default") && !name.isEmpty()) {
-                            VLOG(
-                                "applyDeviceSelection (split+JUCE input): USB/Default intercepte "
-                                "'" +
-                                outName + "' -> built-in '" + name + "'");
-                            outName = name;
-                            break;
-                        }
-                    }
-                }
-            }
             if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
                 return;
 
