@@ -212,6 +212,8 @@ private:
     voicelive::app::AndroidMicCapture micCapture_;
     voicelive::app::AndroidAudioOutput androidAudioOutput_;
     bool splitMicMode_{false};
+    bool splitModeAutoActivated_{false};  ///< split active automatiquement au hotplug USB
+    bool prevHeadphoneConnected_{false};  ///< etat casque lors du dernier poll
 
     voicelive::app::HeadphoneMonitor headphoneMonitor_;
     voicelive::app::HeadphoneLed headphoneLed_;

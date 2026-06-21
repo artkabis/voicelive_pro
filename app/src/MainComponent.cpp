@@ -674,7 +674,10 @@ MainComponent::MainComponent() {
     micModeBox_.addItem("Micro apparie (meme peripherique)", 1);
     micModeBox_.addItem("Micro telephone (mode split)", 2);
     micModeBox_.setSelectedId(1, juce::dontSendNotification);
-    micModeBox_.onChange = [this] { applySplitMicMode(micModeBox_.getSelectedId()); };
+    micModeBox_.onChange = [this] {
+        splitModeAutoActivated_ = false;  // l'utilisateur prend la main
+        applySplitMicMode(micModeBox_.getSelectedId());
+    };
     contentPane_.addAndMakeVisible(micModeBox_);
 
     // I/O section
@@ -1386,6 +1389,32 @@ void MainComponent::timerCallback() {
     // Between polls, headphoneLed_ still reads the cached atomic value.
     if (timerTickCount_ % 10 == 0) {
         headphoneMonitor_.poll(deviceManager);
+
+        // Hotplug USB : activation/desactivation automatique du mode split.
+        // On reagit a la TRANSITION (false->true ou true->false) pour ne pas
+        // rappeler applySplitMicMode a chaque tick.
+        // On cible specifiquement les peripheriques USB (types 11/12/22) :
+        // les casques jack 3.5mm et Bluetooth sont compatibles Oboe sans split.
+        const bool nowConnected = headphoneMonitor_.isConnected();
+        const bool isUsb = headphoneMonitor_.isUsbAudioConnected();
+
+        if (!prevHeadphoneConnected_ && nowConnected && isUsb && !splitMicMode_) {
+            // USB vient de se connecter → basculer en mode split AVANT qu'Oboe
+            // ne tente de rererouter le flux vers le HAL USB et ne gele.
+            juce::Logger::writeToLog(
+                "HeadphoneMonitor: casque USB detecte (hotplug), activation auto mode split");
+            splitModeAutoActivated_ = true;
+            micModeBox_.setSelectedId(2, juce::dontSendNotification);
+            applySplitMicMode(2);
+        } else if (prevHeadphoneConnected_ && !nowConnected && splitModeAutoActivated_) {
+            // USB vient de se deconnecter → retour en mode normal.
+            juce::Logger::writeToLog(
+                "HeadphoneMonitor: casque USB debranche, retour mode normal automatique");
+            splitModeAutoActivated_ = false;
+            micModeBox_.setSelectedId(1, juce::dontSendNotification);
+            applySplitMicMode(0);
+        }
+        prevHeadphoneConnected_ = nowConnected;
     }
     // Re-enumeration complete des peripheriques (scanForDevices -> ~15 JNI).
     // Limitee a ~0,33 Hz : suffisant pour les branchements USB-C / BT que
