@@ -1654,11 +1654,6 @@ void MainComponent::applySplitMicMode(int mode) {
 }
 
 void MainComponent::applyDeviceSelection() {
-    // En mode split, l'entree effective vient d'AudioRecord (micro telephone) ; on
-    // ne touche pas a la config de peripherique JUCE (qui reste en duplex). L'entree
-    // JUCE est ignoree dans getNextAudioBlock.
-    if (splitMicMode_) return;
-
     // Bloque les appels automatiques depuis refreshDeviceList() (JUCE 8 enqueue un
     // handleAsyncUpdate() meme avec dontSendNotification ; le guard reste actif
     // jusqu'apres ce callback grace au reset defere via callAsync).
@@ -1672,36 +1667,52 @@ void MainComponent::applyDeviceSelection() {
 
     auto setup = deviceManager.getAudioDeviceSetup();
     const juce::String outName = outputDeviceBox_.getText();
-    juce::String inName = inputDeviceBox_.getText();
+    juce::String inName;
 
-    // Invariant : si les combos refletent deja l'etat JUCE, il n'y a rien a faire.
-    // Ce check arrete aussi les re-entrees (onChange declenche par les setText ci-dessous).
-    if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
-        return;
-    }
-
-    // Android/Oboe refuse la config "split" (sortie USB + entree differente).
-    // Le HyperX Cloud III USB (type 22) expose egalement un micro USB ; si le meme
-    // nom apparait dans la liste d'entrees, on l'utilise pour eviter le split.
-    // NOTE : on ne conditionne PAS ce bloc a "outName != setup.outputDeviceName".
-    // Cas concerne : sortie deja USB, inchangee, mais refreshDeviceList() a remplace
-    // l'entree par le nom resolu du system default (ex. "SM-A266B built-in microphone").
-    // Sans ce garde, l'invariant ci-dessus laisserait passer la config split.
-    {
+    if (splitMicMode_) {
+        // En mode split, seule la sortie peut changer (l'entree JUCE est ignoree
+        // dans getNextAudioBlock ; AudioRecord fournit le vrai micro telephone).
+        // On force un duplex sur le meme HAL : si le casque USB expose un micro,
+        // on l'utilise comme entree JUCE ; sinon chaine vide (System Default).
+        if (outName == setup.outputDeviceName) return;
         auto* type = deviceManager.getCurrentDeviceTypeObject();
         const juce::StringArray inputNames = type->getDeviceNames(true);
-        if (inputNames.contains(outName) && inName != outName) {
-            juce::Logger::writeToLog("applyDeviceSelection: pairing entree USB '" + outName +
-                                     "' (etait: '" + inName + "')");
-            inName = outName;
-            inputDeviceBox_.setText(inName, juce::dontSendNotification);
-        }
-    }
+        inName = inputNames.contains(outName) ? outName : juce::String();
+        juce::Logger::writeToLog("applyDeviceSelection (split): sortie -> '" + outName +
+                                 "' entree forcee -> '" +
+                                 (inName.isEmpty() ? juce::String("(default)") : inName) + "'");
+    } else {
+        inName = inputDeviceBox_.getText();
 
-    // Re-verification apres pairing (le pairing peut avoir aligne les deux combos
-    // sur l'etat courant sans necessite de changer le peripherique).
-    if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
-        return;
+        // Invariant : si les combos refletent deja l'etat JUCE, il n'y a rien a faire.
+        // Ce check arrete aussi les re-entrees (onChange declenche par les setText ci-dessous).
+        if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
+            return;
+        }
+
+        // Android/Oboe refuse la config "split" (sortie USB + entree differente).
+        // Le HyperX Cloud III USB (type 22) expose egalement un micro USB ; si le meme
+        // nom apparait dans la liste d'entrees, on l'utilise pour eviter le split.
+        // NOTE : on ne conditionne PAS ce bloc a "outName != setup.outputDeviceName".
+        // Cas concerne : sortie deja USB, inchangee, mais refreshDeviceList() a remplace
+        // l'entree par le nom resolu du system default (ex. "SM-A266B built-in microphone").
+        // Sans ce garde, l'invariant ci-dessus laisserait passer la config split.
+        {
+            auto* type = deviceManager.getCurrentDeviceTypeObject();
+            const juce::StringArray inputNames = type->getDeviceNames(true);
+            if (inputNames.contains(outName) && inName != outName) {
+                juce::Logger::writeToLog("applyDeviceSelection: pairing entree USB '" + outName +
+                                         "' (etait: '" + inName + "')");
+                inName = outName;
+                inputDeviceBox_.setText(inName, juce::dontSendNotification);
+            }
+        }
+
+        // Re-verification apres pairing (le pairing peut avoir aligne les deux combos
+        // sur l'etat courant sans necessite de changer le peripherique).
+        if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
+            return;
+        }
     }
 
     setup.outputDeviceName = outName;
@@ -1722,7 +1733,9 @@ void MainComponent::applyDeviceSelection() {
         juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err +
                                  "' -> retour sur '" + actual.outputDeviceName + "'");
         outputDeviceBox_.setText(actual.outputDeviceName, juce::dontSendNotification);
-        inputDeviceBox_.setText(actual.inputDeviceName, juce::dontSendNotification);
+        if (!splitMicMode_) {
+            inputDeviceBox_.setText(actual.inputDeviceName, juce::dontSendNotification);
+        }
     } else {
         const auto actual = deviceManager.getAudioDeviceSetup();
         juce::Logger::writeToLog("Peripherique audio -> sortie='" +
