@@ -36,6 +36,13 @@ using voicelive::core::SampleRate;
 using voicelive::core::TrackState;
 using voicelive::engine::EngineCommand;
 
+// Log detaille peripherique : zero cout quand verboseLogging_ est faux —
+// la chaine n'est jamais construite car elle est dans le corps du if.
+// clang-format off
+// NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
+#define VLOG(msg) do { if (verboseLogging_.load(std::memory_order_relaxed)) juce::Logger::writeToLog(msg); } while (0)  // NOLINT
+// clang-format on
+
 namespace {
 const char* actionName(EngineCommand::Action action) {
     switch (action) {
@@ -728,6 +735,15 @@ MainComponent::MainComponent() {
     };
     contentPane_.addAndMakeVisible(copyButton_);
 
+    verboseLogToggle_.setButtonText("Logs verbeux");
+    verboseLogToggle_.setToggleState(true, juce::dontSendNotification);
+    verboseLogToggle_.onStateChange = [this] {
+        const bool on = verboseLogToggle_.getToggleState();
+        verboseLogging_.store(on, std::memory_order_relaxed);
+        juce::Logger::writeToLog(juce::String("Logs verbeux: ") + (on ? "actives" : "desactives"));
+    };
+    contentPane_.addAndMakeVisible(verboseLogToggle_);
+
     analysis_.assign(kAnalysisSize, 0.0F);
     setSize(400, 800);
     setAudioChannels(2, 2);
@@ -1301,12 +1317,20 @@ void MainComponent::timerCallback() {
     {
         const std::uint64_t blocks = engine_.diagnostics().blocksProcessed;
         if (blocks != lastSeenBlocks_) {
+            const int prevStale = audioStaleTicks_;
             lastSeenBlocks_ = blocks;
             audioStaleTicks_ = 0;
             audioWasAlive_ = true;
             watchdogRestartAttempts_ = 0;  // audio sain : on remet le compteur a zero
+            if (prevStale > 0)
+                VLOG("Watchdog: audio recupere apres " + juce::String(prevStale) + " ticks stales");
         } else {
             ++audioStaleTicks_;
+            if (timerTickCount_ % 10 == 0 && audioStaleTicks_ > 0)
+                VLOG("Watchdog stale: " + juce::String(audioStaleTicks_) +
+                     " ticks | cooldown=" + juce::String(restartCooldownTicks_) +
+                     " split=" + juce::String((int)splitMicMode_) +
+                     " micCapture=" + juce::String((int)micCapture_.isRunning()));
         }
         if (restartCooldownTicks_ > 0) {
             --restartCooldownTicks_;
@@ -1395,6 +1419,8 @@ void MainComponent::timerCallback() {
         // les casques jack 3.5mm et Bluetooth sont compatibles Oboe sans split.
         const bool nowConnected = headphoneMonitor_.isConnected();
         const bool isUsb = headphoneMonitor_.isUsbAudioConnected();
+        VLOG("HeadphoneMonitor poll: connected=" + juce::String((int)nowConnected) +
+             " usb=" + juce::String((int)isUsb) + " | " + headphoneMonitor_.diagnostic());
 
         if (!prevHeadphoneConnected_ && nowConnected && isUsb && !splitMicMode_) {
             // USB vient de se connecter → basculer en mode split AVANT qu'Oboe
@@ -1634,6 +1660,16 @@ void MainComponent::refreshDeviceList() {
 
     const auto setup = deviceManager.getAudioDeviceSetup();
 
+    {
+        juce::String outList, inList;
+        for (const auto& n : type->getDeviceNames(false))
+            outList << "'" << n << "' ";
+        for (const auto& n : type->getDeviceNames(true))
+            inList << "'" << n << "' ";
+        VLOG("refreshDeviceList: sorties=[" + outList.trimEnd() + "] entrees=[" + inList.trimEnd() +
+             "] | JUCE out='" + setup.outputDeviceName + "' in='" + setup.inputDeviceName + "'");
+    }
+
     // Remplit une ComboBox sans casser une selection en cours ni declencher onChange.
     // Protection contre les listes transitoires (ex. scan pendant setAudioDeviceSetup) :
     // si l'element voulu n'est pas dans la nouvelle liste MAIS que la combo l'affiche
@@ -1709,15 +1745,22 @@ void MainComponent::refreshDeviceList() {
     if (outAfter != outBefore || inAfter != inBefore) {
         // Un ou deux combos ont change → triggerAsyncUpdate() a ete enqueue.
         // Le reset doit passer apres lui dans la queue.
+        VLOG("refreshDeviceList: combo change out '" + outBefore + "' -> '" + outAfter + "' in '" +
+             inBefore + "' -> '" + inAfter + "' (reset async)");
         juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
     } else {
         // Aucun changement → pas de triggerAsyncUpdate() → reset immediat sur.
+        VLOG("refreshDeviceList: pas de changement combo (reset immediat)");
         isRefreshingDeviceList_ = false;
     }
 }
 
 void MainComponent::applySplitMicMode(int mode) {
     const bool wantSplit = (mode == 2);
+    VLOG("applySplitMicMode: mode=" + juce::String(mode) + " wantSplit=" +
+         juce::String((int)wantSplit) + " splitMicMode_=" + juce::String((int)splitMicMode_) +
+         " autoActivated=" + juce::String((int)splitModeAutoActivated_) + " | JUCE out='" +
+         deviceManager.getAudioDeviceSetup().outputDeviceName + "'");
     if (wantSplit == splitMicMode_)
         return;
 
@@ -1769,34 +1812,34 @@ void MainComponent::applySplitMicMode(int mode) {
                 juce::String allNames;
                 for (const auto& n : outputNames)
                     allNames << "'" << n << "' ";
-                juce::Logger::writeToLog("Mode split (defere): periph. sortie disponibles: " +
-                                         allNames);
-                juce::String safeOut;
+                VLOG("Mode split (defere): periph. sortie disponibles: " + allNames);
+                // Tenter chaque peripherique integre dans l'ordre jusqu'au premier succes.
+                // Un seul echec ("No such device" lors d'un redemarrage concurrent du
+                // watchdog) ne doit pas bloquer les autres candidats disponibles.
+                isRefreshingDeviceList_ = true;
                 for (const auto& name : outputNames) {
-                    if (!name.containsIgnoreCase("USB") && !name.containsIgnoreCase("Default") &&
-                        !name.isEmpty()) {
-                        safeOut = name;
-                        break;
-                    }
-                }
-                if (safeOut.isEmpty()) {
-                    juce::Logger::writeToLog(
-                        "Mode split (defere): aucun peripherique integre disponible");
-                } else {
-                    isRefreshingDeviceList_ = true;
+                    if (name.containsIgnoreCase("USB") || name.containsIgnoreCase("Default") ||
+                        name.isEmpty())
+                        continue;
                     auto newSetup = curSetup;
-                    newSetup.outputDeviceName = safeOut;
-                    newSetup.inputDeviceName = safeOut;
+                    newSetup.outputDeviceName = name;
+                    newSetup.inputDeviceName = name;
                     newSetup.sampleRate = 0;
                     newSetup.bufferSize = 0;
                     newSetup.useDefaultInputChannels = true;
                     newSetup.useDefaultOutputChannels = true;
                     const auto err = deviceManager.setAudioDeviceSetup(newSetup, true);
-                    juce::Logger::writeToLog("Mode split (defere): JUCE -> '" + safeOut + "'" +
+                    juce::Logger::writeToLog("Mode split (defere): JUCE -> '" + name + "'" +
                                              (err.isNotEmpty() ? " ERREUR: " + err : " OK"));
-                    juceOnBuiltIn = err.isEmpty();
-                    juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
+                    if (err.isEmpty()) {
+                        juceOnBuiltIn = true;
+                        break;
+                    }
                 }
+                juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
+                if (!juceOnBuiltIn)
+                    juce::Logger::writeToLog(
+                        "Mode split (defere): tous les periph. integres ont echoue");
             }
             if (!juceOnBuiltIn) {
                 juce::Logger::writeToLog(
@@ -1839,7 +1882,7 @@ void MainComponent::applyDeviceSelection() {
     // handleAsyncUpdate() meme avec dontSendNotification ; le guard reste actif
     // jusqu'apres ce callback grace au reset defere via callAsync).
     if (isRefreshingDeviceList_) {
-        juce::Logger::writeToLog("applyDeviceSelection: bloquee (refresh auto)");
+        VLOG("applyDeviceSelection: bloquee (refresh auto)");
         return;
     }
     if (deviceManager.getCurrentDeviceTypeObject() == nullptr) {
@@ -1849,6 +1892,11 @@ void MainComponent::applyDeviceSelection() {
     auto setup = deviceManager.getAudioDeviceSetup();
     juce::String outName = outputDeviceBox_.getText();
     juce::String inName;
+
+    VLOG("applyDeviceSelection: out_combo='" + outName + "' in_combo='" +
+         inputDeviceBox_.getText() + "' split=" + juce::String((int)splitMicMode_) +
+         " autoSplit=" + juce::String((int)splitModeAutoActivated_) + " | JUCE out='" +
+         setup.outputDeviceName + "' JUCE in='" + setup.inputDeviceName + "'");
 
     if (splitMicMode_) {
         static const juce::String kAudioRecordInput = "Micro telephone (AudioRecord)";
@@ -1873,7 +1921,7 @@ void MainComponent::applyDeviceSelection() {
                     for (const auto& name : type->getDeviceNames(false)) {
                         if (!name.containsIgnoreCase("USB") &&
                             !name.containsIgnoreCase("Default") && !name.isEmpty()) {
-                            juce::Logger::writeToLog(
+                            VLOG(
                                 "applyDeviceSelection (split+AudioRecord): USB/Default intercepte "
                                 "'" +
                                 outName + "' -> built-in '" + name + "' (sortie via AudioTrack)");
@@ -1887,9 +1935,45 @@ void MainComponent::applyDeviceSelection() {
             if (outName == setup.outputDeviceName)
                 return;
             inName = outName;
-            juce::Logger::writeToLog("applyDeviceSelection (split+AudioRecord): sortie -> '" +
-                                     outName + "'");
+            VLOG("applyDeviceSelection (split+AudioRecord): sortie -> '" + outName + "'");
         } else {
+            // Si le mode split a ete active automatiquement (hotplug USB),
+            // un onChange JUCE peut glisser la combo vers un peripherique JUCE
+            // suite a une recuperation watchdog. On force le retour en mode
+            // AudioRecord et on relance AudioTrack si JUCE est sur un peripherique
+            // integre, sans passer par le chemin JUCE-input qui arrete AudioTrack.
+            if (splitModeAutoActivated_) {
+                inputDeviceBox_.setText("Micro telephone (AudioRecord)",
+                                        juce::dontSendNotification);
+                const bool juceOnBuiltIn = !setup.outputDeviceName.containsIgnoreCase("USB") &&
+                                           !setup.outputDeviceName.containsIgnoreCase("Default") &&
+                                           !setup.outputDeviceName.isEmpty();
+                VLOG("applyDeviceSelection (split auto intercept): JUCE out='" +
+                     setup.outputDeviceName +
+                     "' juceOnBuiltIn=" + juce::String((int)juceOnBuiltIn));
+                if (juceOnBuiltIn) {
+                    if (!androidAudioOutput_.isRunning()) {
+                        if (androidAudioOutput_.start(static_cast<int>(sampleRate_)))
+                            juce::Logger::writeToLog(
+                                "applyDeviceSelection (split auto): AudioTrack demarre " +
+                                juce::String(static_cast<int>(sampleRate_)) + " Hz");
+                        else
+                            juce::Logger::writeToLog(
+                                "applyDeviceSelection (split auto): AudioTrack echoue");
+                    }
+                    if (!micCapture_.isRunning()) {
+                        if (micCapture_.start(static_cast<int>(sampleRate_)))
+                            juce::Logger::writeToLog(
+                                "applyDeviceSelection (split auto): AudioRecord demarre " +
+                                juce::String(static_cast<int>(sampleRate_)) + " Hz");
+                        else
+                            juce::Logger::writeToLog(
+                                "applyDeviceSelection (split auto): AudioRecord echoue");
+                    }
+                }
+                return;
+            }
+
             // L'utilisateur a choisi une vraie entree JUCE en mode split.
             // On arrete AudioRecord et AudioTrack, JUCE gere les deux directions.
             // Attention : cela peut echouer (cross-HAL) et geler le callback ;
@@ -1917,7 +2001,7 @@ void MainComponent::applyDeviceSelection() {
                     for (const auto& name : type->getDeviceNames(false)) {
                         if (!name.containsIgnoreCase("USB") &&
                             !name.containsIgnoreCase("Default") && !name.isEmpty()) {
-                            juce::Logger::writeToLog(
+                            VLOG(
                                 "applyDeviceSelection (split+JUCE input): USB/Default intercepte "
                                 "'" +
                                 outName + "' -> built-in '" + name + "'");
@@ -1941,8 +2025,8 @@ void MainComponent::applyDeviceSelection() {
             }
             if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
                 return;
-            juce::Logger::writeToLog("applyDeviceSelection (split+JUCE input): sortie='" + outName +
-                                     "' entree='" + inName + "'");
+            VLOG("applyDeviceSelection (split+JUCE input): sortie='" + outName + "' entree='" +
+                 inName + "'");
         }
     } else {
         inName = inputDeviceBox_.getText();
@@ -1964,8 +2048,8 @@ void MainComponent::applyDeviceSelection() {
             auto* type = deviceManager.getCurrentDeviceTypeObject();
             const juce::StringArray inputNames = type->getDeviceNames(true);
             if (inputNames.contains(outName) && inName != outName) {
-                juce::Logger::writeToLog("applyDeviceSelection: pairing entree USB '" + outName +
-                                         "' (etait: '" + inName + "')");
+                VLOG("applyDeviceSelection: pairing entree USB '" + outName + "' (etait: '" +
+                     inName + "')");
                 inName = outName;
                 inputDeviceBox_.setText(inName, juce::dontSendNotification);
             }
@@ -2333,7 +2417,11 @@ void MainComponent::resized() {
 
     // Diagnostic
     area.removeFromTop(kGap);
-    copyButton_.setBounds(area.removeFromTop(kCopyH).reduced(2));
+    {
+        auto row = area.removeFromTop(kCopyH);
+        copyButton_.setBounds(row.removeFromLeft(row.getWidth() * 3 / 5).reduced(2));
+        verboseLogToggle_.setBounds(row.reduced(2));
+    }
     area.removeFromTop(kGap / 2);
     {
         const auto logBounds = area.removeFromTop(kDiagH);

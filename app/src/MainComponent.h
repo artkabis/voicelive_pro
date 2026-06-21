@@ -213,8 +213,9 @@ private:
     voicelive::app::AndroidMicCapture micCapture_;
     voicelive::app::AndroidAudioOutput androidAudioOutput_;
     bool splitMicMode_{false};
-    bool splitModeAutoActivated_{false};  ///< split active automatiquement au hotplug USB
-    bool prevHeadphoneConnected_{false};  ///< etat casque lors du dernier poll
+    bool splitModeAutoActivated_{false};      ///< split active automatiquement au hotplug USB
+    bool prevHeadphoneConnected_{false};      ///< etat casque lors du dernier poll
+    std::atomic<bool> verboseLogging_{true};  ///< logs detailles peripheriques — zero cout si faux
 
     voicelive::app::HeadphoneMonitor headphoneMonitor_;
     voicelive::app::HeadphoneLed headphoneLed_;
@@ -334,6 +335,7 @@ private:
     juce::Viewport logViewport_;
     juce::TextEditor diagView_;
     juce::TextButton copyButton_;
+    juce::ToggleButton verboseLogToggle_;  ///< interrupteur logs verbeux (zero cout si desactive)
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
