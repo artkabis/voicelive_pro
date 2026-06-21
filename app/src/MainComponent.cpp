@@ -1562,6 +1562,10 @@ void MainComponent::refreshDeviceList() {
     const auto setup = deviceManager.getAudioDeviceSetup();
 
     // Remplit une ComboBox sans casser une selection en cours ni declencher onChange.
+    // Protection contre les listes transitoires (ex. scan pendant setAudioDeviceSetup) :
+    // si l'element voulu n'est pas dans la nouvelle liste MAIS que la combo l'affiche
+    // deja, on ne touche pas a la selection pour eviter une bascule vers le premier
+    // peripherique de la liste (typiquement "SM-A266B built-in earphone speaker").
     const auto fill = [](juce::ComboBox& box, const juce::StringArray& names,
                          const juce::String& current) {
         if (box.isPopupActive()) {
@@ -1578,13 +1582,20 @@ void MainComponent::refreshDeviceList() {
             return;  // deja a jour : on evite de reinitialiser la selection
         }
 
+        // Si le peripherique voulu est absent de la liste (scan transitoire pendant
+        // l'ouverture du device) ET que la combo l'affiche deja : ne pas degrader
+        // vers le premier item disponible. On re-essaiera au prochain tick.
+        const int wantedIdx = names.indexOf(wanted);
+        if (wantedIdx < 0 && box.getText() == wanted) {
+            return;
+        }
+
         box.clear(juce::dontSendNotification);
         for (int i = 0; i < names.size(); ++i) {
             box.addItem(names[i], i + 1);  // les noms JUCE ne sont jamais vides
         }
         if (!names.isEmpty()) {
-            const int idx = names.indexOf(wanted);
-            box.setSelectedId(idx >= 0 ? idx + 1 : 1, juce::dontSendNotification);
+            box.setSelectedId(wantedIdx >= 0 ? wantedIdx + 1 : 1, juce::dontSendNotification);
         }
     };
 
@@ -1592,7 +1603,12 @@ void MainComponent::refreshDeviceList() {
     const juce::String inBefore = inputDeviceBox_.getText();
 
     fill(outputDeviceBox_, type->getDeviceNames(false), setup.outputDeviceName);
-    fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
+    // En mode split, l'entree JUCE est ignoree : on ne rafraichit pas la combo entree
+    // pour conserver l'affichage "Micro telephone (AudioRecord)" et eviter de
+    // declencher applyDeviceSelection depuis le tick du timer.
+    if (!splitMicMode_) {
+        fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
+    }
 
     // Reset DIFFERE : JUCE 8's ComboBox::setSelectedId() appelle triggerAsyncUpdate()
     // meme avec dontSendNotification, ce qui planifie handleAsyncUpdate() → onChange()
