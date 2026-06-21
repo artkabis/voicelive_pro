@@ -1295,7 +1295,14 @@ void MainComponent::timerCallback() {
     // Between polls, headphoneLed_ still reads the cached atomic value.
     if (timerTickCount_ % 10 == 0) {
         headphoneMonitor_.poll(deviceManager);
-        refreshDeviceList();  // capte les hotplugs USB-C qu'Android ne notifie pas toujours
+    }
+    // La re-enumeration complete des peripheriques (scanForDevices -> JNI) ne sert
+    // qu'a rafraichir le selecteur : inutile a 1 Hz. On la limite a ~0,33 Hz pour
+    // alleger le thread message. Un hotplug reel declenche deja refreshDeviceList()
+    // via changeListenerCallback ; ce balayage periodique n'est qu'un filet pour les
+    // branchements qu'Android ne notifie pas toujours.
+    if (timerTickCount_ % 30 == 0) {
+        refreshDeviceList();
     }
     headphoneLed_.setConnected(headphoneMonitor_.isConnected());
 

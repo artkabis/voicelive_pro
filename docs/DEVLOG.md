@@ -5,6 +5,72 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-21 — Effets guitare, transport global, sélecteur de périphériques & audit RT
+
+### Effets guitare (`dsp`, +5 effets, +21 tests)
+Cinq effets temps réel sur l'interface `Effect` (process() sans allocation,
+`noexcept`), pensés pour la guitare électrique :
+- **`Distortion`** : mise en forme d'onde 3 modes (soft-clip `tanh`, hard-clip,
+  fuzz asymétrique) + drive, tone (passe-bas un pôle), level, mix.
+- **`NoiseGate`** : porte de bruit (détecteur d'enveloppe + seuil dB, attaque/
+  relâche) ; activable, supprime souffle/larsen entre les notes.
+- **`Tremolo`** : modulation d'amplitude par LFO sinusoïdal (rate/depth/mix).
+- **`Phaser`** : cascade de 6 passe-tout du premier ordre balayés + feedback.
+- **`Flanger`** : retard court (1–7 ms) modulé + feedback + lecture fractionnaire.
+
+Câblés dans `dsp/CMakeLists.txt`, `VoiceLivePro.jucer` **et** l'UI (panneau FX
+par piste, 5 rangées). La **chaîne live a été réordonnée en signal guitare
+classique** : `gate → distorsion → wah → phaser → flanger → chorus → tremolo →
+delay → reverb` (le gate coupe le souffle *avant* la disto, la reverb en dernier).
+Le rendu offline (`renderMix`) applique la **même séquence**. Réordonnancement
+sûr : les états on/off d'effets ne sont pas persistés.
+
+Piège : les effets dont le `process()` ne dépend que de `sampleRate_` doivent
+défaut à **0** (et non `kStudio`) pour que la garde « passthrough avant
+prepare() » fonctionne (3 tests rouges au départ, corrigés).
+
+### Transport global (`app`)
+Trois boutons au-dessus des pistes : **▶ Toutes** (stop des pistes en cours puis
+play de toutes celles ayant du contenu — démarrage **synchronisé** car toutes les
+commandes sont vidées dans le même `while(commands_.pop())` → ~1 bloc), **⏸ Pause**
+(stop des pistes en lecture, **playhead conservé** car `TrackProcessor::stop()` ne
+le réinitialise pas) et **⏹ Stop**.
+
+Correctif CI : `pauseAllTracks` appelait `LooperTrack::isPlaying()` (inexistant —
+c'est une méthode du `TrackProcessor`) → erreur de compilation Android, remplacée
+par un test de `state()`.
+
+### Sélecteur de périphériques & diagnostic casque (`app`)
+- **Sélecteur** entrée/sortie : `OboeAudioIODeviceType` énumère déjà les
+  périphériques physiques (JNI) et route via `setDeviceId()`. L'UI liste les noms
+  exacts et applique le choix via `setAudioDeviceSetup()`. `scanForDevices()` étant
+  vide en amont, un patch CI (`android.yml`) le rend ré-énumérant pour le hotplug.
+- **Diagnostic** : `HeadphoneMonitor` logge désormais **tous** les types de
+  périphériques (`types=[…]`, empaquetés dans un `atomic<int64>`), pas seulement le
+  premier. Constante corrigée : `TYPE_AUX_LINE = 19` (et non 21 = `TYPE_IP`).
+
+### Formes d'onde interactives (`app`)
+Zoom par boutons `[+]`/`[−]` (fenêtre `[viewStart_, viewEnd_]`, cache de crêtes
+invalidé au changement) et **double-clic pour déplacer la tête de lecture**
+(nouvelle commande `EngineCommand::Action::Seek` → `TrackProcessor::setPlayhead`).
+Note : `mouseMagnify()` (pinch) n'est **pas** implémenté par le backend Android de
+JUCE 8.x → les boutons explicites sont la solution fiable sur mobile.
+
+### Audit d'optimisation temps réel
+Vérification du chemin audio : `LoopAudio` (mémoire pré-allouée, 30 s/piste),
+`RingBuffer` SPSC lock-free, `TrackProcessor`/`LooperEngine`/`EffectChain`/effets —
+**aucune allocation ni verrou dans le callback**, confirmé. Mémoire bornée
+(~46 Mo pour 8 pistes). Seul point ajusté : `refreshDeviceList()` (ré-énumération
+JNI) passait à 1 Hz dans le `timerCallback` ; ramené à **~0,33 Hz** (la détection
+casque, qui pilote l'anti-larsen, reste à 1 Hz) pour alléger le thread message.
+
+### Vérifié
+- **178 tests** verts (core 41, dsp 70, engine 67), build warnings-as-errors
+  propre, `clang-format` conforme.
+- UI validée par le build **APK Android** (non compilable en local sans NDK/JUCE).
+
+---
+
 ## 2026-06-19 — Correctifs sur appareil : enregistrement & détection USB-C
 
 Tests sur appareil réel (APK) : deux régressions visibles, corrigées.
