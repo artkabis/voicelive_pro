@@ -39,17 +39,17 @@ namespace voicelive::engine {
 /// Chaque commande est produite sur le thread UI et consommée sur le thread audio.
 struct EngineCommand {
     enum class Action : std::uint8_t {
-        Record,          ///< Empty → Recording.
-        FinishRecording, ///< Recording → Playing (fige la boucle).
-        Play,            ///< Stopped → Playing.
-        Stop,            ///< {Recording, Playing, Overdubbing} → Stopped.
-        StartOverdub,    ///< Playing → Overdubbing.
-        StopOverdub,     ///< Overdubbing → Playing.
-        Clear,           ///< Tout état → Empty (efface le contenu).
-        SetGain,         ///< Champ `gain` utilisé.
-        SetMuted,        ///< Champ `muted` utilisé.
-        SelectTrack,     ///< Sélectionne la piste active (champ `track`).
-        Seek,            ///< Déplace la tête de lecture : position en échantillons (champ `position`).
+        Record,           ///< Empty → Recording.
+        FinishRecording,  ///< Recording → Playing (fige la boucle).
+        Play,             ///< Stopped → Playing.
+        Stop,             ///< {Recording, Playing, Overdubbing} → Stopped.
+        StartOverdub,     ///< Playing → Overdubbing.
+        StopOverdub,      ///< Overdubbing → Playing.
+        Clear,            ///< Tout état → Empty (efface le contenu).
+        SetGain,          ///< Champ `gain` utilisé.
+        SetMuted,         ///< Champ `muted` utilisé.
+        SelectTrack,      ///< Sélectionne la piste active (champ `track`).
+        Seek,  ///< Déplace la tête de lecture : position en échantillons (champ `position`).
     };
 
     Action action = Action::Stop;

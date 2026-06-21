@@ -746,7 +746,7 @@ MainComponent::~MainComponent() {
     stopTimer();
     deviceManager.removeChangeListener(this);
     headphoneMonitor_.detach(deviceManager);  // avant shutdownAudio pour eviter callbacks tardifs
-    micCapture_.stop();                        // avant shutdownAudio : le thread audio doit etre vivant
+    micCapture_.stop();  // avant shutdownAudio : le thread audio doit etre vivant
     shutdownAudio();
     juce::Logger::setCurrentLogger(nullptr);
 }
@@ -1133,9 +1133,8 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
             micCapture_.stop();
             if (micWasRunning) {
                 if (micCapture_.start(static_cast<int>(sampleRate))) {
-                    juce::Logger::writeToLog(
-                        "AndroidMicCapture: reprise micro telephone " +
-                        juce::String(static_cast<int>(sampleRate)) + " Hz");
+                    juce::Logger::writeToLog("AndroidMicCapture: reprise micro telephone " +
+                                             juce::String(static_cast<int>(sampleRate)) + " Hz");
                 } else {
                     juce::Logger::writeToLog("AndroidMicCapture: reprise echouee");
                 }
@@ -1144,9 +1143,8 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
             androidAudioOutput_.stop();
             if (outWasRunning) {
                 if (androidAudioOutput_.start(static_cast<int>(sampleRate))) {
-                    juce::Logger::writeToLog(
-                        "AndroidAudioOutput: reprise AudioTrack " +
-                        juce::String(static_cast<int>(sampleRate)) + " Hz");
+                    juce::Logger::writeToLog("AndroidAudioOutput: reprise AudioTrack " +
+                                             juce::String(static_cast<int>(sampleRate)) + " Hz");
                 } else {
                     juce::Logger::writeToLog("AndroidAudioOutput: reprise echouee");
                 }
@@ -1239,8 +1237,7 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     // Anti-larsen : couper le haut-parleur pendant l'enregistrement SAUF si un
     // casque est detecte (casque = pas de reinjection micro, monitoring OK).
     // AndroidAudioOutput implique qu'un casque USB est present → pas de larsen.
-    const bool hasHeadphones =
-        headphoneMonitor_.isConnected() || androidAudioOutput_.isRunning();
+    const bool hasHeadphones = headphoneMonitor_.isConnected() || androidAudioOutput_.isRunning();
     if (anyTrackRecording_.load(std::memory_order_acquire) && !hasHeadphones) {
         std::fill(monoOut.begin(), monoOut.end(), 0.0F);
     }
@@ -1276,9 +1273,8 @@ void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source) {
         const auto setup = deviceManager.getAudioDeviceSetup();
         const auto* dev = deviceManager.getCurrentAudioDevice();
         juce::Logger::writeToLog(
-            "Changement peripherique audio : sortie='" + setup.outputDeviceName +
-            "' entree='" + setup.inputDeviceName + "'" +
-            (dev != nullptr ? " [ouvert]" : " [ferme]") +
+            "Changement peripherique audio : sortie='" + setup.outputDeviceName + "' entree='" +
+            setup.inputDeviceName + "'" + (dev != nullptr ? " [ouvert]" : " [ferme]") +
             " refresh_guard=" + juce::String(isRefreshingDeviceList_ ? "1" : "0"));
     }
 }
@@ -1553,9 +1549,10 @@ void MainComponent::updateDiagnostics() {
         const bool outActive = androidAudioOutput_.isRunning();
         const juce::String inputChoice = inputDeviceBox_.getText();
         if (outActive) {
-            text << "Mode split : sortie=AudioTrack(STREAM_MUSIC→USB auto)"
-                 << " - " << (outActive ? "ACTIF" : "ARRETE") << "\n";
-            text << "  Sortie AudioTrack : drop=" << juce::String(androidAudioOutput_.droppedSamples())
+            text << "Mode split : sortie=AudioTrack(STREAM_MUSIC→USB auto)" << " - "
+                 << (outActive ? "ACTIF" : "ARRETE") << "\n";
+            text << "  Sortie AudioTrack : drop="
+                 << juce::String(androidAudioOutput_.droppedSamples())
                  << "  underrun=" << juce::String(androidAudioOutput_.underrunSamples()) << "\n";
         }
         if (arActive) {
@@ -1721,7 +1718,8 @@ void MainComponent::refreshDeviceList() {
 
 void MainComponent::applySplitMicMode(int mode) {
     const bool wantSplit = (mode == 2);
-    if (wantSplit == splitMicMode_) return;
+    if (wantSplit == splitMicMode_)
+        return;
 
     if (wantSplit) {
         splitMicMode_ = true;
@@ -1757,9 +1755,11 @@ void MainComponent::applySplitMicMode(int mode) {
         // Le callAsync garantit que tous les messages en file sont traites avant de
         // toucher le peripherique.
         juce::MessageManager::callAsync([this]() {
-            if (!splitMicMode_) return;
+            if (!splitMicMode_)
+                return;
             auto* type = deviceManager.getCurrentDeviceTypeObject();
-            if (type == nullptr) return;
+            if (type == nullptr)
+                return;
             const auto curSetup = deviceManager.getAudioDeviceSetup();
             const bool onUsb = curSetup.outputDeviceName.containsIgnoreCase("USB") ||
                                curSetup.outputDeviceName.containsIgnoreCase("Default");
@@ -1767,13 +1767,14 @@ void MainComponent::applySplitMicMode(int mode) {
             if (onUsb) {
                 const auto outputNames = type->getDeviceNames(false);
                 juce::String allNames;
-                for (const auto& n : outputNames) allNames << "'" << n << "' ";
-                juce::Logger::writeToLog(
-                    "Mode split (defere): periph. sortie disponibles: " + allNames);
+                for (const auto& n : outputNames)
+                    allNames << "'" << n << "' ";
+                juce::Logger::writeToLog("Mode split (defere): periph. sortie disponibles: " +
+                                         allNames);
                 juce::String safeOut;
                 for (const auto& name : outputNames) {
-                    if (!name.containsIgnoreCase("USB") &&
-                        !name.containsIgnoreCase("Default") && !name.isEmpty()) {
+                    if (!name.containsIgnoreCase("USB") && !name.containsIgnoreCase("Default") &&
+                        !name.isEmpty()) {
                         safeOut = name;
                         break;
                     }
@@ -1791,13 +1792,10 @@ void MainComponent::applySplitMicMode(int mode) {
                     newSetup.useDefaultInputChannels = true;
                     newSetup.useDefaultOutputChannels = true;
                     const auto err = deviceManager.setAudioDeviceSetup(newSetup, true);
-                    juce::Logger::writeToLog(
-                        "Mode split (defere): JUCE -> '" + safeOut + "'" +
-                        (err.isNotEmpty() ? " ERREUR: " + err : " OK"));
+                    juce::Logger::writeToLog("Mode split (defere): JUCE -> '" + safeOut + "'" +
+                                             (err.isNotEmpty() ? " ERREUR: " + err : " OK"));
                     juceOnBuiltIn = err.isEmpty();
-                    juce::MessageManager::callAsync([this]() {
-                        isRefreshingDeviceList_ = false;
-                    });
+                    juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
                 }
             }
             if (!juceOnBuiltIn) {
@@ -1816,9 +1814,8 @@ void MainComponent::applySplitMicMode(int mode) {
             }
             if (!micCapture_.isRunning()) {
                 if (micCapture_.start(static_cast<int>(sampleRate_))) {
-                    juce::Logger::writeToLog(
-                        "AndroidMicCapture: capture micro telephone " +
-                        juce::String(static_cast<int>(sampleRate_)) + " Hz");
+                    juce::Logger::writeToLog("AndroidMicCapture: capture micro telephone " +
+                                             juce::String(static_cast<int>(sampleRate_)) + " Hz");
                 } else {
                     juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
                 }
@@ -1877,8 +1874,9 @@ void MainComponent::applyDeviceSelection() {
                         if (!name.containsIgnoreCase("USB") &&
                             !name.containsIgnoreCase("Default") && !name.isEmpty()) {
                             juce::Logger::writeToLog(
-                                "applyDeviceSelection (split+AudioRecord): USB/Default intercepte '"
-                                + outName + "' -> built-in '" + name + "' (sortie via AudioTrack)");
+                                "applyDeviceSelection (split+AudioRecord): USB/Default intercepte "
+                                "'" +
+                                outName + "' -> built-in '" + name + "' (sortie via AudioTrack)");
                             outName = name;
                             break;
                         }
@@ -1886,10 +1884,11 @@ void MainComponent::applyDeviceSelection() {
                 }
             }
 
-            if (outName == setup.outputDeviceName) return;
+            if (outName == setup.outputDeviceName)
+                return;
             inName = outName;
-            juce::Logger::writeToLog(
-                "applyDeviceSelection (split+AudioRecord): sortie -> '" + outName + "'");
+            juce::Logger::writeToLog("applyDeviceSelection (split+AudioRecord): sortie -> '" +
+                                     outName + "'");
         } else {
             // L'utilisateur a choisi une vraie entree JUCE en mode split.
             // On arrete AudioRecord et AudioTrack, JUCE gere les deux directions.
@@ -1897,14 +1896,17 @@ void MainComponent::applyDeviceSelection() {
             // le watchdog est actif dans ce sous-mode (micCapture_ non running).
             if (micCapture_.isRunning()) {
                 micCapture_.stop();
-                juce::Logger::writeToLog("applyDeviceSelection (split+JUCE input): arret AudioRecord");
+                juce::Logger::writeToLog(
+                    "applyDeviceSelection (split+JUCE input): arret AudioRecord");
             }
             if (androidAudioOutput_.isRunning()) {
                 androidAudioOutput_.stop();
-                juce::Logger::writeToLog("applyDeviceSelection (split+JUCE input): arret AudioTrack");
+                juce::Logger::writeToLog(
+                    "applyDeviceSelection (split+JUCE input): arret AudioTrack");
             }
             inName = inputDeviceBox_.getText();
-            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) return;
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
+                return;
 
             // Eviter Oboe:517 : si la sortie est USB ou System Default (qui route vers
             // USB), la rediriger vers le peripherique integre. Meme garde que le chemin
@@ -1916,15 +1918,17 @@ void MainComponent::applyDeviceSelection() {
                         if (!name.containsIgnoreCase("USB") &&
                             !name.containsIgnoreCase("Default") && !name.isEmpty()) {
                             juce::Logger::writeToLog(
-                                "applyDeviceSelection (split+JUCE input): USB/Default intercepte '"
-                                + outName + "' -> built-in '" + name + "'");
+                                "applyDeviceSelection (split+JUCE input): USB/Default intercepte "
+                                "'" +
+                                outName + "' -> built-in '" + name + "'");
                             outName = name;
                             break;
                         }
                     }
                 }
             }
-            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) return;
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
+                return;
 
             // Same-HAL pairing si l'entree choisie est le meme peripherique que la sortie.
             {
@@ -1935,7 +1939,8 @@ void MainComponent::applyDeviceSelection() {
                     inputDeviceBox_.setText(inName, juce::dontSendNotification);
                 }
             }
-            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) return;
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
+                return;
             juce::Logger::writeToLog("applyDeviceSelection (split+JUCE input): sortie='" + outName +
                                      "' entree='" + inName + "'");
         }
@@ -1981,24 +1986,23 @@ void MainComponent::applyDeviceSelection() {
     setup.useDefaultOutputChannels = true;
 
     juce::Logger::writeToLog("Tentative peripherique -> sortie='" + outName + "' entree='" +
-                              inName + "'");
+                             inName + "'");
     const auto err = deviceManager.setAudioDeviceSetup(setup, true);
     if (err.isNotEmpty()) {
         // Echec (ex. split USB refuse par Oboe). On aligne les combos sur le
         // peripherique ACTUELLEMENT ouvert. Quand l'onChange async de ces setText
         // rechecke l'invariant, out==setup.out && in==setup.in → retour immediat.
         const auto actual = deviceManager.getAudioDeviceSetup();
-        juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err +
-                                 "' -> retour sur '" + actual.outputDeviceName + "'");
+        juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err + "' -> retour sur '" +
+                                 actual.outputDeviceName + "'");
         outputDeviceBox_.setText(actual.outputDeviceName, juce::dontSendNotification);
         if (!splitMicMode_) {
             inputDeviceBox_.setText(actual.inputDeviceName, juce::dontSendNotification);
         }
     } else {
         const auto actual = deviceManager.getAudioDeviceSetup();
-        juce::Logger::writeToLog("Peripherique audio -> sortie='" +
-                                 actual.outputDeviceName + "' entree='" +
-                                 actual.inputDeviceName + "'");
+        juce::Logger::writeToLog("Peripherique audio -> sortie='" + actual.outputDeviceName +
+                                 "' entree='" + actual.inputDeviceName + "'");
     }
 }
 
@@ -2097,8 +2101,8 @@ void MainComponent::resized() {
                        trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
                        3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
                        kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
-                       kAudioRowH + 4 + kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap +
-                       kCopyH + kGap / 2 + kDiagH + pad;
+                       kAudioRowH + 4 + kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH +
+                       kGap / 2 + kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
@@ -2294,7 +2298,8 @@ void MainComponent::resized() {
         exportMixBtn_.setBounds(editRow.reduced(2));
     }
 
-    // Peripheriques audio section : [label] / [Sortie | combo] / [Entree | combo] / [Mode micro | combo]
+    // Peripheriques audio section : [label] / [Sortie | combo] / [Entree | combo] / [Mode micro |
+    // combo]
     area.removeFromTop(kGap);
     audioDevLabel_.setBounds(area.removeFromTop(kAudioLblH));
     area.removeFromTop(4);

@@ -20,7 +20,8 @@ namespace voicelive::app {
 // ─── Producteur (thread audio JUCE) : compile sur toutes les plateformes ─────
 
 int AndroidAudioOutput::writeSamples(const float* src, int count) noexcept {
-    if (count <= 0) return 0;
+    if (count <= 0)
+        return 0;
     const std::size_t want = static_cast<std::size_t>(count);
     const std::size_t wrote = fifo_.write(src, want);
     if (wrote < want) {
@@ -83,8 +84,7 @@ void AndroidAudioOutput::outputLoop() noexcept {
         } else {
             // Underrun complet : ecrire du silence pour maintenir le flux AudioTrack.
             std::fill(nativeBuf, nativeBuf + kWriteBlock, 0.0F);
-            underrun_.fetch_add(static_cast<std::uint64_t>(kWriteBlock),
-                                std::memory_order_relaxed);
+            underrun_.fetch_add(static_cast<std::uint64_t>(kWriteBlock), std::memory_order_relaxed);
         }
 
         env->SetFloatArrayRegion(jBuf, 0, static_cast<jsize>(kWriteBlock), nativeBuf);
@@ -140,9 +140,8 @@ bool AndroidAudioOutput::start(int sampleRate) noexcept {
     }
     constexpr jint kChannelOutMono = 4;
     constexpr jint kEncodingPcmFloat = 4;
-    const jint minBuf =
-        env->CallStaticIntMethod(atClass, minBufId, (jint)sampleRate, kChannelOutMono,
-                                 kEncodingPcmFloat);
+    const jint minBuf = env->CallStaticIntMethod(atClass, minBufId, (jint)sampleRate,
+                                                 kChannelOutMono, kEncodingPcmFloat);
     if (minBuf <= 0) {
         VLOUT_E("start: getMinBufferSize=%d (sampleRate=%d non supporte?)", (int)minBuf,
                 sampleRate);
@@ -159,15 +158,16 @@ bool AndroidAudioOutput::start(int sampleRate) noexcept {
         env->DeleteLocalRef(atClass);
         return false;
     }
-    constexpr jint kStreamMusic = 3;   // AudioManager.STREAM_MUSIC
-    constexpr jint kModeStream = 1;    // AudioTrack.MODE_STREAM
-    jobject localAt = env->NewObject(atClass, ctor, kStreamMusic, (jint)sampleRate,
-                                     kChannelOutMono, kEncodingPcmFloat, bufSize, kModeStream);
+    constexpr jint kStreamMusic = 3;  // AudioManager.STREAM_MUSIC
+    constexpr jint kModeStream = 1;   // AudioTrack.MODE_STREAM
+    jobject localAt = env->NewObject(atClass, ctor, kStreamMusic, (jint)sampleRate, kChannelOutMono,
+                                     kEncodingPcmFloat, bufSize, kModeStream);
     env->DeleteLocalRef(atClass);
     if (localAt == nullptr || env->ExceptionCheck()) {
         env->ExceptionClear();
         VLOUT_E("start: new AudioTrack() echec");
-        if (localAt != nullptr) env->DeleteLocalRef(localAt);
+        if (localAt != nullptr)
+            env->DeleteLocalRef(localAt);
         return false;
     }
 
@@ -221,8 +221,7 @@ bool AndroidAudioOutput::start(int sampleRate) noexcept {
     running_.store(true, std::memory_order_release);
     outputThread_ = std::thread([this]() { outputLoop(); });
 
-    VLOUT_I("start: AudioTrack (STREAM_MUSIC) demarre a %d Hz, bufMin=%d", sampleRate,
-            (int)minBuf);
+    VLOUT_I("start: AudioTrack (STREAM_MUSIC) demarre a %d Hz, bufMin=%d", sampleRate, (int)minBuf);
     return true;
 }
 
@@ -270,7 +269,9 @@ void AndroidAudioOutput::stop() noexcept {
 
 #else  // ─── Stubs non-Android ─────────────────────────────────────────────────
 
-bool AndroidAudioOutput::start(int) noexcept { return false; }
+bool AndroidAudioOutput::start(int) noexcept {
+    return false;
+}
 void AndroidAudioOutput::stop() noexcept {}
 
 #endif

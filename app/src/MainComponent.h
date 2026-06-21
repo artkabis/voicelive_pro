@@ -60,7 +60,7 @@ public:
 
 private:
     static constexpr std::size_t kTrackCount = 3;
-    static constexpr int kMaxChannels = 8;           ///< Canaux max tolérés en entrée/sortie JUCE.
+    static constexpr int kMaxChannels = 8;  ///< Canaux max tolérés en entrée/sortie JUCE.
     static constexpr std::size_t kAnalysisSize = 4096;  ///< Fenêtre glissante (accordeur + FFT).
 
     /// Controles d'une piste.
@@ -165,8 +165,8 @@ private:
     void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
     void updateDiagnostics();
-    void refreshDeviceList();     ///< met a jour les listes de peripheriques (sortie/entree)
-    void applyDeviceSelection();  ///< applique le choix via setAudioDeviceSetup (routage Oboe)
+    void refreshDeviceList();          ///< met a jour les listes de peripheriques (sortie/entree)
+    void applyDeviceSelection();       ///< applique le choix via setAudioDeviceSetup (routage Oboe)
     void applySplitMicMode(int mode);  ///< 1=normal, 2=split (USB sortie + micro telephone)
 
     // --- Transport global ---------------------------------------------------
@@ -232,12 +232,12 @@ private:
     // Watchdog audio (thread UI only) : detecte un callback audio fige (ex. echec
     // de reroutage Oboe au branchement USB-C) et relance le peripherique. La relance
     // est non destructive : prepareToPlay() conserve les pistes (cf. reconfigure()).
-    std::uint64_t lastSeenBlocks_ = 0;  ///< dernier compteur de blocs moteur observe
-    int audioStaleTicks_ = 0;           ///< ticks consecutifs sans nouveau bloc
-    int restartCooldownTicks_ = 0;      ///< ticks restants avant relance autorisee
-    bool audioWasAlive_ = false;        ///< vrai des qu'au moins un bloc a ete vu
-    int watchdogStartupAttempts_ = 0;   ///< tentatives de demarrage echouees (cas 2)
-    int watchdogRestartAttempts_ = 0;   ///< tentatives de relance apres freeze (cas 1)
+    std::uint64_t lastSeenBlocks_ = 0;     ///< dernier compteur de blocs moteur observe
+    int audioStaleTicks_ = 0;              ///< ticks consecutifs sans nouveau bloc
+    int restartCooldownTicks_ = 0;         ///< ticks restants avant relance autorisee
+    bool audioWasAlive_ = false;           ///< vrai des qu'au moins un bloc a ete vu
+    int watchdogStartupAttempts_ = 0;      ///< tentatives de demarrage echouees (cas 2)
+    int watchdogRestartAttempts_ = 0;      ///< tentatives de relance apres freeze (cas 1)
     bool isRefreshingDeviceList_ = false;  ///< guard: empeche applyDeviceSelection pendant fill
 
     double sampleRate_ = 48000.0;

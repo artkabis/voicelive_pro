@@ -13,8 +13,10 @@
 namespace voicelive::dsp {
 namespace {
 
-constexpr double kRmsFloor = 1.0e-4;  // en deçà : signal jugé silencieux (évite de détecter sur du bruit)
-constexpr double kPeakRatio = 0.9;    // seuil du premier pic NSDF : 90 % du max global évite les harmoniques
+constexpr double kRmsFloor =
+    1.0e-4;  // en deçà : signal jugé silencieux (évite de détecter sur du bruit)
+constexpr double kPeakRatio =
+    0.9;  // seuil du premier pic NSDF : 90 % du max global évite les harmoniques
 
 /// Fonction de différence carrée normalisée pour les retards [minLag, maxLag].
 std::vector<double> computeNsdf(std::span<const float> samples, std::size_t minLag,

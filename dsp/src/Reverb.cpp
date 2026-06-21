@@ -15,12 +15,14 @@ namespace {
 // Constantes Freeverb d'origine (réglées pour 44,1 kHz).
 constexpr std::array<int, 8> kCombTuning{1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617};
 constexpr std::array<int, 4> kAllpassTuning{556, 441, 341, 225};
-constexpr float kFixedGain = 0.015F;  // gain d'injection dans les combs (calibré par Dattorro/Smith)
-constexpr float kRoomScale = 0.28F;   // plage utile du paramètre roomSize dans le feedback
-constexpr float kRoomOffset = 0.7F;   // feedback minimal même à roomSize=0
-constexpr float kDampScale = 0.4F;    // limite la réponse en fréquence du damping
+constexpr float kFixedGain =
+    0.015F;  // gain d'injection dans les combs (calibré par Dattorro/Smith)
+constexpr float kRoomScale = 0.28F;       // plage utile du paramètre roomSize dans le feedback
+constexpr float kRoomOffset = 0.7F;       // feedback minimal même à roomSize=0
+constexpr float kDampScale = 0.4F;        // limite la réponse en fréquence du damping
 constexpr float kAllpassFeedback = 0.5F;  // feedback standard des passe-tout Freeverb
-constexpr double kReferenceRate = 44'100.0;  // fréquence pour laquelle les longueurs de comb sont exprimées
+constexpr double kReferenceRate =
+    44'100.0;  // fréquence pour laquelle les longueurs de comb sont exprimées
 
 float clamp01(float value) noexcept {
     return std::clamp(value, 0.0F, 1.0F);

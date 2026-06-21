@@ -70,7 +70,7 @@ private:
     std::atomic<int> diagOutputCount_{0};  // nb de peripheriques de sortie vus
     // Packed: bits[3:0]=count, bits[9:4]=type[0], bits[15:10]=type[1], ..., 6 bits/type, max 10.
     std::atomic<std::int64_t> diagAllTypes_{0};
-    std::atomic<int> diagFoundType_{-1};   // type qui a declenche found=true, -1 si absent
+    std::atomic<int> diagFoundType_{-1};  // type qui a declenche found=true, -1 si absent
 };
 
 }  // namespace voicelive::app
