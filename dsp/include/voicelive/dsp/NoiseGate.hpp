@@ -33,11 +33,11 @@ private:
     void updateCoeffs() noexcept;
 
     unsigned sampleRate_ = core::SampleRate::kStudio;
-    float env_ = 0.0F;        ///< Enveloppe suivie du signal.
-    float gain_ = 0.0F;       ///< Gain de porte courant [0, 1].
+    float env_ = 0.0F;   ///< Enveloppe suivie du signal.
+    float gain_ = 0.0F;  ///< Gain de porte courant [0, 1].
     float attackCoeff_ = 0.0F;
     float releaseCoeff_ = 0.0F;
-    float envCoeff_ = 0.0F;   ///< Lissage de l'enveloppe (détecteur).
+    float envCoeff_ = 0.0F;  ///< Lissage de l'enveloppe (détecteur).
 
     bool enabled_ = false;
     float thresholdDb_ = -45.0F;

@@ -31,8 +31,13 @@
 #include "voicelive/dsp/BpmDetector.hpp"
 #include "voicelive/dsp/Chorus.hpp"
 #include "voicelive/dsp/Delay.hpp"
+#include "voicelive/dsp/Distortion.hpp"
 #include "voicelive/dsp/Equalizer.hpp"
+#include "voicelive/dsp/Flanger.hpp"
+#include "voicelive/dsp/NoiseGate.hpp"
+#include "voicelive/dsp/Phaser.hpp"
 #include "voicelive/dsp/Reverb.hpp"
+#include "voicelive/dsp/Tremolo.hpp"
 #include "voicelive/dsp/Wah.hpp"
 #include "voicelive/engine/LoopAudio.hpp"
 #include "voicelive/engine/LooperEngine.hpp"
@@ -127,14 +132,25 @@ private:
     /// Les pointeurs raw sont possedes par l'EffectChain correspondante.
     struct TrackFxPanel {
         juce::TextButton reverbBtn, delayBtn, wahBtn, chorusBtn;
+        juce::TextButton distBtn, gateBtn, tremBtn, phaserBtn, flangerBtn;
         juce::Slider reverbWetSlider;    ///< wet level  [0, 1]
         juce::Slider delayTimeSlider;    ///< delay time [0.05, 1.0] s
         juce::Slider wahRateSlider;      ///< LFO rate   [0.1, 5.0] Hz
         juce::Slider chorusDepthSlider;  ///< modulation depth [0, 1]
+        juce::Slider distDriveSlider;    ///< drive      [1, 30]
+        juce::Slider gateThreshSlider;   ///< threshold  [-80, 0] dB
+        juce::Slider tremRateSlider;     ///< LFO rate   [0.5, 12] Hz
+        juce::Slider phaserRateSlider;   ///< sweep rate [0.05, 4] Hz
+        juce::Slider flangerRateSlider;  ///< sweep rate [0.05, 4] Hz
         voicelive::dsp::Reverb* reverb = nullptr;
         voicelive::dsp::Delay* delay = nullptr;
         voicelive::dsp::Wah* wah = nullptr;
         voicelive::dsp::Chorus* chorus = nullptr;
+        voicelive::dsp::Distortion* distortion = nullptr;
+        voicelive::dsp::NoiseGate* gate = nullptr;
+        voicelive::dsp::Tremolo* tremolo = nullptr;
+        voicelive::dsp::Phaser* phaser = nullptr;
+        voicelive::dsp::Flanger* flanger = nullptr;
     };
 
     void setupTrackStrip(std::size_t index);

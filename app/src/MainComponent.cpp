@@ -16,8 +16,13 @@
 #include "voicelive/core/Transport.hpp"
 #include "voicelive/dsp/Chorus.hpp"
 #include "voicelive/dsp/Delay.hpp"
+#include "voicelive/dsp/Distortion.hpp"
 #include "voicelive/dsp/Equalizer.hpp"
+#include "voicelive/dsp/Flanger.hpp"
+#include "voicelive/dsp/NoiseGate.hpp"
+#include "voicelive/dsp/Phaser.hpp"
 #include "voicelive/dsp/Reverb.hpp"
+#include "voicelive/dsp/Tremolo.hpp"
 #include "voicelive/dsp/Wah.hpp"
 #include "voicelive/engine/ChannelUtils.hpp"
 #include "voicelive/engine/WavFile.hpp"
@@ -869,6 +874,101 @@ void MainComponent::setupFxPanel(std::size_t index) {
             f.chorus->setMix(static_cast<float>(f.chorusDepthSlider.getValue()));
         }
     };
+
+    // Distortion (drive)
+    fx.distBtn.setButtonText("DST");
+    fx.distBtn.setClickingTogglesState(true);
+    fx.distBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.distortion)
+            return;
+        f.distortion->setMix(f.distBtn.getToggleState() ? 1.0F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.distBtn);
+
+    makeParamSlider(fx.distDriveSlider, 1.0, 30.0, 8.0);
+    fx.distDriveSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.distortion) {
+            f.distortion->setDrive(static_cast<float>(f.distDriveSlider.getValue()));
+        }
+    };
+
+    // Noise Gate (threshold dB)
+    fx.gateBtn.setButtonText("GATE");
+    fx.gateBtn.setClickingTogglesState(true);
+    fx.gateBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.gate)
+            return;
+        f.gate->setEnabled(f.gateBtn.getToggleState());
+    };
+    contentPane_.addAndMakeVisible(fx.gateBtn);
+
+    makeParamSlider(fx.gateThreshSlider, -80.0, 0.0, -45.0);
+    fx.gateThreshSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.gate) {
+            f.gate->setThreshold(static_cast<float>(f.gateThreshSlider.getValue()));
+        }
+    };
+
+    // Tremolo (rate)
+    fx.tremBtn.setButtonText("TRM");
+    fx.tremBtn.setClickingTogglesState(true);
+    fx.tremBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.tremolo)
+            return;
+        f.tremolo->setMix(f.tremBtn.getToggleState() ? 1.0F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.tremBtn);
+
+    makeParamSlider(fx.tremRateSlider, 0.5, 12.0, 5.0);
+    fx.tremRateSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.tremolo) {
+            f.tremolo->setRate(static_cast<float>(f.tremRateSlider.getValue()));
+        }
+    };
+
+    // Phaser (sweep rate)
+    fx.phaserBtn.setButtonText("PHS");
+    fx.phaserBtn.setClickingTogglesState(true);
+    fx.phaserBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.phaser)
+            return;
+        f.phaser->setMix(f.phaserBtn.getToggleState() ? 0.5F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.phaserBtn);
+
+    makeParamSlider(fx.phaserRateSlider, 0.05, 4.0, 0.5);
+    fx.phaserRateSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.phaser) {
+            f.phaser->setRate(static_cast<float>(f.phaserRateSlider.getValue()));
+        }
+    };
+
+    // Flanger (sweep rate)
+    fx.flangerBtn.setButtonText("FLG");
+    fx.flangerBtn.setClickingTogglesState(true);
+    fx.flangerBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.flanger)
+            return;
+        f.flanger->setMix(f.flangerBtn.getToggleState() ? 0.5F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.flangerBtn);
+
+    makeParamSlider(fx.flangerRateSlider, 0.05, 4.0, 0.3);
+    fx.flangerRateSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.flanger) {
+            f.flanger->setRate(static_cast<float>(f.flangerRateSlider.getValue()));
+        }
+    };
 }
 
 void MainComponent::setupEffects() {
@@ -881,20 +981,26 @@ void MainComponent::setupEffects() {
         if (!chain)
             continue;
 
-        auto reverb = std::make_unique<voicelive::dsp::Reverb>();
-        reverb->setWet(0.0F);
-        reverb->setDry(1.0F);
-        reverb->setRoomSize(0.7F);
-        reverb->setDamping(0.5F);
-        fxPanels_[i].reverb = reverb.get();
-        chain->add(std::move(reverb));
+        // L'ordre d'ajout = ordre de traitement. On adopte une chaine « guitare »
+        // classique : gate -> distorsion -> wah -> modulations -> delay -> reverb.
+        // Tous les effets demarrent en bypass (mix=0 / gate desactivee).
 
-        auto delay = std::make_unique<voicelive::dsp::Delay>();
-        delay->setMix(0.0F);
-        delay->setDelaySeconds(0.25F);
-        delay->setFeedback(0.4F);
-        fxPanels_[i].delay = delay.get();
-        chain->add(std::move(delay));
+        auto gate = std::make_unique<voicelive::dsp::NoiseGate>();
+        gate->setEnabled(false);
+        gate->setThreshold(-45.0F);
+        gate->setAttack(5.0F);
+        gate->setRelease(120.0F);
+        fxPanels_[i].gate = gate.get();
+        chain->add(std::move(gate));
+
+        auto distortion = std::make_unique<voicelive::dsp::Distortion>();
+        distortion->setMix(0.0F);
+        distortion->setMode(voicelive::dsp::Distortion::Mode::SoftClip);
+        distortion->setDrive(8.0F);
+        distortion->setTone(0.5F);
+        distortion->setLevel(0.6F);
+        fxPanels_[i].distortion = distortion.get();
+        chain->add(std::move(distortion));
 
         auto wah = std::make_unique<voicelive::dsp::Wah>();
         wah->setMix(0.0F);
@@ -905,12 +1011,50 @@ void MainComponent::setupEffects() {
         fxPanels_[i].wah = wah.get();
         chain->add(std::move(wah));
 
+        auto phaser = std::make_unique<voicelive::dsp::Phaser>();
+        phaser->setMix(0.0F);
+        phaser->setRate(0.5F);
+        phaser->setDepth(0.7F);
+        phaser->setFeedback(0.4F);
+        fxPanels_[i].phaser = phaser.get();
+        chain->add(std::move(phaser));
+
+        auto flanger = std::make_unique<voicelive::dsp::Flanger>();
+        flanger->setMix(0.0F);
+        flanger->setRate(0.3F);
+        flanger->setDepth(0.6F);
+        flanger->setFeedback(0.5F);
+        fxPanels_[i].flanger = flanger.get();
+        chain->add(std::move(flanger));
+
         auto chorus = std::make_unique<voicelive::dsp::Chorus>();
         chorus->setMix(0.0F);
         chorus->setRate(1.5F);
         chorus->setDepth(0.5F);
         fxPanels_[i].chorus = chorus.get();
         chain->add(std::move(chorus));
+
+        auto tremolo = std::make_unique<voicelive::dsp::Tremolo>();
+        tremolo->setMix(0.0F);
+        tremolo->setRate(5.0F);
+        tremolo->setDepth(0.7F);
+        fxPanels_[i].tremolo = tremolo.get();
+        chain->add(std::move(tremolo));
+
+        auto delay = std::make_unique<voicelive::dsp::Delay>();
+        delay->setMix(0.0F);
+        delay->setDelaySeconds(0.25F);
+        delay->setFeedback(0.4F);
+        fxPanels_[i].delay = delay.get();
+        chain->add(std::move(delay));
+
+        auto reverb = std::make_unique<voicelive::dsp::Reverb>();
+        reverb->setWet(0.0F);
+        reverb->setDry(1.0F);
+        reverb->setRoomSize(0.7F);
+        reverb->setDamping(0.5F);
+        fxPanels_[i].reverb = reverb.get();
+        chain->add(std::move(reverb));
     }
 }
 
@@ -1478,8 +1622,9 @@ void MainComponent::resized() {
     constexpr int kDiagH = 200;
     constexpr int kGap = 10;
 
-    // Hauteur d'un bloc piste : 2 rangees de controles + waveform + 2 rangees FX + rangee edition
-    constexpr int kTrackH = kRowH + 6 + kRowH + 4 + kWaveH + 4 + kFxRowH + kFxRowH + kEditRowH;
+    // Hauteur d'un bloc piste : 2 rangees de controles + waveform + 5 rangees FX + rangee edition
+    constexpr int kFxRows = 5;
+    constexpr int kTrackH = kRowH + 6 + kRowH + 4 + kWaveH + 4 + (kFxRowH * kFxRows) + kEditRowH;
 
     const int trackCount = static_cast<int>(kTrackCount);
     const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap / 2 + kGlobalTransH + kGap +
@@ -1578,6 +1723,40 @@ void MainComponent::resized() {
             fxPanels_[i].wahRateSlider.setBounds(left.reduced(2));
             fxPanels_[i].chorusBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
             fxPanels_[i].chorusDepthSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // FX Rangee 3 : [DST | drive] | [GATE | seuil]
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].distBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].distDriveSlider.setBounds(left.reduced(2));
+            fxPanels_[i].gateBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].gateThreshSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // FX Rangee 4 : [TRM | rate] | [PHS | rate]
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].tremBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].tremRateSlider.setBounds(left.reduced(2));
+            fxPanels_[i].phaserBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].phaserRateSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // FX Rangee 5 : [FLG | rate] | (libre)
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].flangerBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].flangerRateSlider.setBounds(left.reduced(2));
         }
 
         // Rangee edition : [Cut Sel] [Trim Sel] [Export N] [BPM]
@@ -1974,20 +2153,25 @@ void MainComponent::renderMixToTrack() {
         const std::span<float> block{trackBuf.data(), trackBuf.size()};
         const auto& fx = fxPanels_[i];
 
-        if (fx.reverb != nullptr && fx.reverbBtn.getToggleState()) {
-            voicelive::dsp::Reverb r;
-            r.setRoomSize(fx.reverb->roomSize());
-            r.setDamping(fx.reverb->damping());
-            r.setWet(fx.reverb->wet());
-            r.setDry(fx.reverb->dry());
-            r.prepare(sr.value(), mixLen);
-            r.process(block);
+        // Meme ordre que la chaine live (setupEffects) :
+        // gate -> distorsion -> wah -> phaser -> flanger -> chorus -> tremolo
+        // -> delay -> reverb.
+        if (fx.gate != nullptr && fx.gateBtn.getToggleState()) {
+            voicelive::dsp::NoiseGate g;
+            g.setEnabled(true);
+            g.setThreshold(fx.gate->thresholdDb());
+            g.setAttack(fx.gate->attackMs());
+            g.setRelease(fx.gate->releaseMs());
+            g.prepare(sr.value(), mixLen);
+            g.process(block);
         }
-        if (fx.delay != nullptr && fx.delayBtn.getToggleState()) {
-            voicelive::dsp::Delay d;
-            d.setDelaySeconds(fx.delay->delaySeconds());
-            d.setFeedback(fx.delay->feedback());
-            d.setMix(fx.delay->mix());
+        if (fx.distortion != nullptr && fx.distBtn.getToggleState()) {
+            voicelive::dsp::Distortion d;
+            d.setMode(fx.distortion->mode());
+            d.setDrive(fx.distortion->drive());
+            d.setTone(fx.distortion->tone());
+            d.setLevel(fx.distortion->level());
+            d.setMix(fx.distortion->mix());
             d.prepare(sr.value(), mixLen);
             d.process(block);
         }
@@ -2001,6 +2185,24 @@ void MainComponent::renderMixToTrack() {
             w.prepare(sr.value(), mixLen);
             w.process(block);
         }
+        if (fx.phaser != nullptr && fx.phaserBtn.getToggleState()) {
+            voicelive::dsp::Phaser p;
+            p.setRate(fx.phaser->rate());
+            p.setDepth(fx.phaser->depth());
+            p.setFeedback(fx.phaser->feedback());
+            p.setMix(fx.phaser->mix());
+            p.prepare(sr.value(), mixLen);
+            p.process(block);
+        }
+        if (fx.flanger != nullptr && fx.flangerBtn.getToggleState()) {
+            voicelive::dsp::Flanger fl;
+            fl.setRate(fx.flanger->rate());
+            fl.setDepth(fx.flanger->depth());
+            fl.setFeedback(fx.flanger->feedback());
+            fl.setMix(fx.flanger->mix());
+            fl.prepare(sr.value(), mixLen);
+            fl.process(block);
+        }
         if (fx.chorus != nullptr && fx.chorusBtn.getToggleState()) {
             voicelive::dsp::Chorus c;
             c.setRate(fx.chorus->rate());
@@ -2008,6 +2210,31 @@ void MainComponent::renderMixToTrack() {
             c.setMix(fx.chorus->mix());
             c.prepare(sr.value(), mixLen);
             c.process(block);
+        }
+        if (fx.tremolo != nullptr && fx.tremBtn.getToggleState()) {
+            voicelive::dsp::Tremolo t;
+            t.setRate(fx.tremolo->rate());
+            t.setDepth(fx.tremolo->depth());
+            t.setMix(fx.tremolo->mix());
+            t.prepare(sr.value(), mixLen);
+            t.process(block);
+        }
+        if (fx.delay != nullptr && fx.delayBtn.getToggleState()) {
+            voicelive::dsp::Delay d;
+            d.setDelaySeconds(fx.delay->delaySeconds());
+            d.setFeedback(fx.delay->feedback());
+            d.setMix(fx.delay->mix());
+            d.prepare(sr.value(), mixLen);
+            d.process(block);
+        }
+        if (fx.reverb != nullptr && fx.reverbBtn.getToggleState()) {
+            voicelive::dsp::Reverb r;
+            r.setRoomSize(fx.reverb->roomSize());
+            r.setDamping(fx.reverb->damping());
+            r.setWet(fx.reverb->wet());
+            r.setDry(fx.reverb->dry());
+            r.prepare(sr.value(), mixLen);
+            r.process(block);
         }
 
         // Accumulation dans le mix avec le gain de piste.
