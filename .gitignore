@@ -183,6 +183,9 @@ cython_debug/
 build-release/
 build-rel/
 build-app/
+build_check/
+build_tidy/
+build_*/
 
 # Artefacts de test générés (écrits dans le CWD)
 vlpro_*
