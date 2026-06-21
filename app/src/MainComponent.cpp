@@ -1289,12 +1289,13 @@ void MainComponent::timerCallback() {
         // Cas 1 : audio vivant puis fige (2 s sans bloc).
         // Limite a kMaxRestartAttempts relances consecutives. Au-dela, setAudioChannels()
         // repart de zero (System Default) plutot que de reboucler sur une config cassee.
-        // En mode split, on NE relance PAS via restartLastAudioDevice() : avec la config
-        // meme-HAL (USB+USB), la relance est en principe sure, mais on prefere laisser
-        // le diagnostic "stale=[GELE]" visible et laisser l'utilisateur basculer le mode
-        // micro pour reinitialiser, le temps de confirmer que le meme-HAL suffit.
+        // En mode split+AudioRecord : le watchdog est desactive car Oboe USB+USB peut
+        // geler sans recuperation possible ; l'utilisateur doit changer de peripherique.
+        // En mode split+JUCE (utilisateur a choisi une entree JUCE, AudioRecord arrete) :
+        // le watchdog est actif pour recuperer un eventuel freeze cross-HAL.
+        const bool splitAudioRecordActive = splitMicMode_ && micCapture_.isRunning();
         if (audioWasAlive_ && deviceRunning && isShowing() && audioStaleTicks_ >= 20 &&
-            restartCooldownTicks_ == 0 && !splitMicMode_) {
+            restartCooldownTicks_ == 0 && !splitAudioRecordActive) {
             ++watchdogRestartAttempts_;
             constexpr int kMaxRestartAttempts = 3;
 
@@ -1332,7 +1333,7 @@ void MainComponent::timerCallback() {
         // peripheriques depuis zero et peut ouvrir un flux sur le bon appareil.
         // Limite a kMaxStartupAttempts pour eviter le spam d'assertions.
         if (!audioWasAlive_ && !engineReady && isShowing() && audioStaleTicks_ >= 20 &&
-            restartCooldownTicks_ == 0 && !splitMicMode_) {
+            restartCooldownTicks_ == 0 && !splitAudioRecordActive) {
             ++watchdogStartupAttempts_;
             constexpr int kMaxStartupAttempts = 3;
             if (watchdogStartupAttempts_ <= kMaxStartupAttempts) {
@@ -1490,10 +1491,16 @@ void MainComponent::updateDiagnostics() {
     // (FIFO vide -> silence). Des valeurs qui grimpent en continu signalent un
     // probleme de cadence ; quelques unites au demarrage sont normales.
     if (splitMicMode_) {
-        text << "Mode split : sortie USB + micro telephone (AudioRecord) - "
-             << (micCapture_.isRunning() ? "ACTIF" : "ARRETE") << "\n";
-        text << "  Capture micro : drop=" << juce::String(micCapture_.droppedSamples())
-             << "  underrun=" << juce::String(micCapture_.underrunSamples()) << "\n";
+        const bool arActive = micCapture_.isRunning();
+        const juce::String inputChoice = inputDeviceBox_.getText();
+        if (arActive) {
+            text << "Mode split : entree=AudioRecord (micro telephone) - ACTIF\n";
+            text << "  Capture micro : drop=" << juce::String(micCapture_.droppedSamples())
+                 << "  underrun=" << juce::String(micCapture_.underrunSamples()) << "\n";
+        } else {
+            text << "Mode split : entree=JUCE ('" << inputChoice << "') - AudioRecord ARRETE\n";
+            text << "  [Watchdog actif - recup auto si le callback gele]\n";
+        }
     }
 
     const auto diag = engine_.diagnostics();
@@ -1607,10 +1614,19 @@ void MainComponent::refreshDeviceList() {
     const juce::String inBefore = inputDeviceBox_.getText();
 
     fill(outputDeviceBox_, type->getDeviceNames(false), setup.outputDeviceName);
-    // En mode split, l'entree JUCE est ignoree : on ne rafraichit pas la combo entree
-    // pour conserver l'affichage "Micro telephone (AudioRecord)" et eviter de
-    // declencher applyDeviceSelection depuis le tick du timer.
-    if (!splitMicMode_) {
+    if (splitMicMode_) {
+        // En mode split, on propose "Micro telephone (AudioRecord)" en premier,
+        // suivi des peripheriques JUCE normaux. La combo reste activee : l'utilisateur
+        // peut choisir une autre entree JUCE si besoin, mais AudioRecord est la valeur
+        // par defaut (et la seule qui fonctionne avec la sortie USB sur cet appareil).
+        static const juce::String kAudioRecordItem = "Micro telephone (AudioRecord)";
+        juce::StringArray splitInputNames;
+        splitInputNames.add(kAudioRecordItem);
+        splitInputNames.addArray(type->getDeviceNames(true));
+        const juce::String currentIn =
+            inputDeviceBox_.getText().isEmpty() ? kAudioRecordItem : inputDeviceBox_.getText();
+        fill(inputDeviceBox_, splitInputNames, currentIn);
+    } else {
         fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
     }
 
@@ -1652,7 +1668,11 @@ void MainComponent::applySplitMicMode(int mode) {
         // JUCE (micro du casque) est simplement ignoree dans getNextAudioBlock.
         // On ne touche pas au peripherique courant : la selection de sortie est
         // preservee (et le watchdog est neutralise en split, cf. timerCallback).
-        inputDeviceBox_.setEnabled(false);
+        //
+        // La combo entree RESTE ACTIVEE : l'utilisateur peut voir et choisir sa source
+        // d'entree. Par defaut on pre-selectionne "Micro telephone (AudioRecord)" ;
+        // refreshDeviceList() peuplera la liste complete au prochain tick.
+        inputDeviceBox_.setEnabled(true);
         inputDeviceBox_.setText("Micro telephone (AudioRecord)", juce::dontSendNotification);
         if (!micCapture_.isRunning()) {
             if (micCapture_.start(static_cast<int>(sampleRate_))) {
@@ -1690,18 +1710,49 @@ void MainComponent::applyDeviceSelection() {
     juce::String inName;
 
     if (splitMicMode_) {
-        // En mode split, seule la sortie peut changer (l'entree JUCE est ignoree
-        // dans getNextAudioBlock ; AudioRecord fournit le vrai micro telephone).
-        // On force TOUJOURS le meme nom pour l'entree et la sortie JUCE (meme HAL).
-        // Raison : Oboe refuse le duplex cross-HAL (sortie USB + entree integrée) et
-        // gele le callback audio sans retourner d'erreur → getNextAudioBlock() ne
-        // tourne plus et l'enregistrement reste vide. En forçant le meme peripherique
-        // pour les deux directions, Oboe reste sur un seul HAL et l'audio fonctionne.
-        // L'entree JUCE est de toute facon ignoree (AudioRecord fournit le micro).
-        if (outName == setup.outputDeviceName) return;
-        inName = outName;
-        juce::Logger::writeToLog("applyDeviceSelection (split): sortie -> '" + outName +
-                                 "' entree forcee meme HAL -> '" + outName + "'");
+        static const juce::String kAudioRecordInput = "Micro telephone (AudioRecord)";
+        const bool usingAudioRecord = (inputDeviceBox_.getText() == kAudioRecordInput);
+
+        if (usingAudioRecord) {
+            // Entree = AudioRecord : JUCE reste en duplex sur le meme peripherique
+            // (meme HAL) pour eviter Oboe:236 (cross-HAL) et Oboe:517 (USB+USB).
+            // Le vrai micro est fourni par AndroidMicCapture, pas par JUCE.
+            //
+            // On demarre AudioRecord d'abord (cas : l'utilisateur revient depuis une
+            // entree JUCE vers AudioRecord alors que la sortie n'a pas change).
+            if (!micCapture_.isRunning()) {
+                micCapture_.start(static_cast<int>(sampleRate_));
+            }
+            // Si la sortie JUCE n'a pas change, rien a reconfigurer du cote JUCE.
+            if (outName == setup.outputDeviceName) return;
+            inName = outName;
+            juce::Logger::writeToLog("applyDeviceSelection (split+AudioRecord): sortie -> '" +
+                                     outName + "' entree JUCE forcee meme HAL -> '" + outName + "'");
+        } else {
+            // L'utilisateur a choisi une vraie entree JUCE en mode split.
+            // On arrete AudioRecord et on laisse JUCE gerer les deux directions.
+            // Attention : cela peut echouer (cross-HAL) et geler le callback ;
+            // le watchdog est actif dans ce sous-mode (micCapture_ non running).
+            if (micCapture_.isRunning()) {
+                micCapture_.stop();
+                juce::Logger::writeToLog("applyDeviceSelection (split+JUCE input): arret AudioRecord");
+            }
+            inName = inputDeviceBox_.getText();
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) return;
+
+            // Same-HAL pairing si l'entree choisie est le meme peripherique USB que la sortie.
+            {
+                auto* type = deviceManager.getCurrentDeviceTypeObject();
+                const juce::StringArray inputNames = type->getDeviceNames(true);
+                if (inputNames.contains(outName) && inName != outName) {
+                    inName = outName;
+                    inputDeviceBox_.setText(inName, juce::dontSendNotification);
+                }
+            }
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) return;
+            juce::Logger::writeToLog("applyDeviceSelection (split+JUCE input): sortie='" + outName +
+                                     "' entree='" + inName + "'");
+        }
     } else {
         inName = inputDeviceBox_.getText();
 
