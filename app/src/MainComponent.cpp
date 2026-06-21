@@ -1199,12 +1199,14 @@ void MainComponent::releaseResources() {
 // ─── ChangeListener (hotplug USB-C / routage audio) ──────────────────────────
 
 void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source) {
-    // Sert uniquement au journal : HeadphoneMonitor gere deja la detection casque.
-    // On n'appelle PAS restartLastAudioDevice() ici car engine_.prepare() efface
-    // toutes les pistes enregistrees. JUCE/Oboe gere lui-meme le reroutage audio.
+    // Sert uniquement au journal. On n'appelle PAS refreshDeviceList() ici :
+    // refreshDeviceList() appelle scanForDevices() qui declenche lui-meme une
+    // notification AudioDeviceManager → boucle infinie de restarts qui empeche
+    // getNextAudioBlock() de recevoir des echantillons. Le timer a 0,33 Hz suffit
+    // pour le hotplug. On n'appelle pas non plus restartLastAudioDevice() car
+    // engine_.prepare() efface toutes les pistes enregistrees.
     if (dynamic_cast<juce::AudioDeviceManager*>(source) != nullptr) {
         juce::Logger::writeToLog("Changement peripherique audio (USB-C / BT ?)");
-        refreshDeviceList();  // un hotplug peut ajouter/retirer une entree de la liste
     }
 }
 
@@ -1296,11 +1298,9 @@ void MainComponent::timerCallback() {
     if (timerTickCount_ % 10 == 0) {
         headphoneMonitor_.poll(deviceManager);
     }
-    // La re-enumeration complete des peripheriques (scanForDevices -> JNI) ne sert
-    // qu'a rafraichir le selecteur : inutile a 1 Hz. On la limite a ~0,33 Hz pour
-    // alleger le thread message. Un hotplug reel declenche deja refreshDeviceList()
-    // via changeListenerCallback ; ce balayage periodique n'est qu'un filet pour les
-    // branchements qu'Android ne notifie pas toujours.
+    // Re-enumeration complete des peripheriques (scanForDevices -> ~15 JNI).
+    // Limitee a ~0,33 Hz : suffisant pour les branchements USB-C / BT que
+    // changeListenerCallback ne peut pas gerer (evite la boucle notification).
     if (timerTickCount_ % 30 == 0) {
         refreshDeviceList();
     }
