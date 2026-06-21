@@ -60,8 +60,8 @@ public:
 
 private:
     static constexpr std::size_t kTrackCount = 3;
-    static constexpr int kMaxChannels = 8;
-    static constexpr std::size_t kAnalysisSize = 4096;
+    static constexpr int kMaxChannels = 8;           ///< Canaux max tolérés en entrée/sortie JUCE.
+    static constexpr std::size_t kAnalysisSize = 4096;  ///< Fenêtre glissante (accordeur + FFT).
 
     /// Controles d'une piste.
     struct TrackStrip {
@@ -107,13 +107,14 @@ private:
         // Fenetre de zoom : portion de la boucle affichee ([0,1] = pas de zoom).
         float viewStart_ = 0.0F;
         float viewEnd_ = 1.0F;
-        // Peak cache: rebuilt when loopLength, width, or zoom window changes.
+        // Cache de pics par pixel : évite de relire tous les échantillons à chaque repaint().
+        // Invalidé si loopLength, largeur de composant ou fenêtre de zoom changent.
         mutable std::vector<float> peakCache_;
         mutable std::size_t cachedLoopLength_ = 0;
         mutable int cachedWidth_ = 0;
         mutable float cachedViewStart_ = -1.0F;
         mutable float cachedViewEnd_ = -1.0F;
-        // Playhead (message thread only)
+        // Tête de lecture (thread message uniquement, mis à jour par timerCallback).
         std::size_t playheadPos_ = 0;
         std::size_t playheadLen_ = 0;
         double playheadSr_ = 48000.0;

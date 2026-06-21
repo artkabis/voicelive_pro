@@ -272,6 +272,8 @@ void MainComponent::TrackWaveform::mouseDrag(const juce::MouseEvent& e) {
 }
 
 void MainComponent::TrackWaveform::mouseUp(const juce::MouseEvent& /*e*/) {
+    // Seuil relatif à la fenêtre de zoom : 1 % de la vue, pas de la boucle entière —
+    // évite qu'un simple clic sans glissement active une sélection parasite.
     selActive_ = std::abs(selEnd_ - selStart_) > 0.01F * (viewEnd_ - viewStart_);
     repaint();
 }
