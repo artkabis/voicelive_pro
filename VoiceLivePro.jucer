@@ -16,6 +16,10 @@
             file="app/src/HeadphoneMonitor.h"/>
       <FILE id="appHpC" name="HeadphoneMonitor.cpp" compile="1" resource="0"
             file="app/src/HeadphoneMonitor.cpp"/>
+      <FILE id="appMicH" name="AndroidMicCapture.hpp" compile="0" resource="0"
+            file="app/src/AndroidMicCapture.hpp"/>
+      <FILE id="appMicC" name="AndroidMicCapture.cpp" compile="1" resource="0"
+            file="app/src/AndroidMicCapture.cpp"/>
     </GROUP>
     <GROUP id="grpCore" name="core">
       <FILE id="coreLoop" name="LooperTrack.cpp" compile="1" resource="0"

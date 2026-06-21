@@ -33,6 +33,7 @@ if(VOICELIVE_BUILD_TESTS)
     add_executable(engine_tests
         tests/test_main.cpp
         tests/test_ring_buffer.cpp
+        tests/test_sample_fifo.cpp
         tests/test_loop_audio.cpp
         tests/test_mixer.cpp
         tests/test_track_processor.cpp

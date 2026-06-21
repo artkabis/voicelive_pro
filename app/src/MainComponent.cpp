@@ -667,6 +667,16 @@ MainComponent::MainComponent() {
     inputDeviceBox_.onChange = [this] { applyDeviceSelection(); };
     contentPane_.addAndMakeVisible(inputDeviceBox_);
 
+    // Mode d'entree micro : appariage JUCE normal vs mode split (micro telephone independant).
+    micModeLabel_.setText("Mode micro", juce::dontSendNotification);
+    micModeLabel_.setJustificationType(juce::Justification::centredLeft);
+    contentPane_.addAndMakeVisible(micModeLabel_);
+    micModeBox_.addItem("Micro apparie (meme peripherique)", 1);
+    micModeBox_.addItem("Micro telephone (mode split)", 2);
+    micModeBox_.setSelectedId(1, juce::dontSendNotification);
+    micModeBox_.onChange = [this] { applySplitMicMode(micModeBox_.getSelectedId()); };
+    contentPane_.addAndMakeVisible(micModeBox_);
+
     // I/O section
     ioLabel_.setText("Projet", juce::dontSendNotification);
     ioLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
@@ -731,6 +741,7 @@ MainComponent::~MainComponent() {
     stopTimer();
     deviceManager.removeChangeListener(this);
     headphoneMonitor_.detach(deviceManager);  // avant shutdownAudio pour eviter callbacks tardifs
+    micCapture_.stop();                        // avant shutdownAudio : le thread audio doit etre vivant
     shutdownAudio();
     juce::Logger::setCurrentLogger(nullptr);
 }
@@ -1107,6 +1118,20 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
             juce::Logger::writeToLog("Mix transport reconnecte apres reprise peripherique");
         }
         mixTransport_.prepareToPlay(static_cast<int>(engineBlock), sampleRate);
+
+        // En mode split, redemarrer la capture micro telephone avec la nouvelle frequence.
+        // prepareToPlay est rappele a chaque changement de peripherique (branchement casque,
+        // relance watchdog…) : on resynchronise AudioRecord pour eviter un mismatch de sampleRate.
+        if (splitMicMode_) {
+            micCapture_.stop();
+            if (micCapture_.start(static_cast<int>(sampleRate))) {
+                juce::Logger::writeToLog(
+                    "AndroidMicCapture: capture micro telephone " +
+                    juce::String(static_cast<int>(sampleRate)) + " Hz");
+            } else {
+                juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
+            }
+        }
     } catch (const std::exception& e) {
         juce::Logger::writeToLog(juce::String("ERREUR prepareToPlay: ") + e.what());
     } catch (...) {
@@ -1145,7 +1170,17 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
 
     const std::span<float> monoIn{monoIn_.data(), numSamples};
     const std::span<float> monoOut{monoOut_.data(), numSamples};
-    channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
+
+    // Mode split : entree depuis AndroidMicCapture (ring buffer), pas depuis JUCE/Oboe.
+    // JUCE est configure avec 0 canal d'entree (setAudioChannels(2,0)) ; le buffer
+    // ne contient que les canaux de sortie — inputPtrs pointerait sur des donnees non-audio.
+    if (splitMicMode_ && micCapture_.isRunning()) {
+        const int got = micCapture_.readSamples(monoIn_.data(), static_cast<int>(numSamples));
+        if (got < static_cast<int>(numSamples))
+            std::fill(monoIn_.data() + got, monoIn_.data() + numSamples, 0.0F);
+    } else {
+        channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
+    }
 
     // Diagnostic bon marche : crete d'entree + taille de bloc, pour confirmer sur
     // l'appareil que le micro capture bien (niveau > 0 pendant l'enregistrement).
@@ -1199,12 +1234,20 @@ void MainComponent::releaseResources() {
 // ─── ChangeListener (hotplug USB-C / routage audio) ──────────────────────────
 
 void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source) {
-    // Sert uniquement au journal : HeadphoneMonitor gere deja la detection casque.
-    // On n'appelle PAS restartLastAudioDevice() ici car engine_.prepare() efface
-    // toutes les pistes enregistrees. JUCE/Oboe gere lui-meme le reroutage audio.
+    // Sert uniquement au journal. On n'appelle PAS refreshDeviceList() ici :
+    // refreshDeviceList() appelle scanForDevices() qui declenche lui-meme une
+    // notification AudioDeviceManager → boucle infinie de restarts qui empeche
+    // getNextAudioBlock() de recevoir des echantillons. Le timer a 0,33 Hz suffit
+    // pour le hotplug. On n'appelle pas non plus restartLastAudioDevice() car
+    // engine_.prepare() efface toutes les pistes enregistrees.
     if (dynamic_cast<juce::AudioDeviceManager*>(source) != nullptr) {
-        juce::Logger::writeToLog("Changement peripherique audio (USB-C / BT ?)");
-        refreshDeviceList();  // un hotplug peut ajouter/retirer une entree de la liste
+        const auto setup = deviceManager.getAudioDeviceSetup();
+        const auto* dev = deviceManager.getCurrentAudioDevice();
+        juce::Logger::writeToLog(
+            "Changement peripherique audio : sortie='" + setup.outputDeviceName +
+            "' entree='" + setup.inputDeviceName + "'" +
+            (dev != nullptr ? " [ouvert]" : " [ferme]") +
+            " refresh_guard=" + juce::String(isRefreshingDeviceList_ ? "1" : "0"));
     }
 }
 
@@ -1233,6 +1276,7 @@ void MainComponent::timerCallback() {
             lastSeenBlocks_ = blocks;
             audioStaleTicks_ = 0;
             audioWasAlive_ = true;
+            watchdogRestartAttempts_ = 0;  // audio sain : on remet le compteur a zero
         } else {
             ++audioStaleTicks_;
         }
@@ -1243,10 +1287,14 @@ void MainComponent::timerCallback() {
         const bool engineReady = engine_.trackCount() == kTrackCount;
 
         // Cas 1 : audio vivant puis fige (2 s sans bloc).
+        // Limite a kMaxRestartAttempts relances consecutives. Au-dela, setAudioChannels()
+        // repart de zero (System Default) plutot que de reboucler sur une config cassee
+        // (ex. casque USB en sortie + micro integre en entree = split refuse par Oboe).
         if (audioWasAlive_ && deviceRunning && isShowing() && audioStaleTicks_ >= 20 &&
             restartCooldownTicks_ == 0) {
-            juce::Logger::writeToLog(
-                "Watchdog: audio fige (2s sans bloc), relance du peripherique");
+            ++watchdogRestartAttempts_;
+            constexpr int kMaxRestartAttempts = 3;
+
             if (anyTrackRecording_.load(std::memory_order_acquire)) {
                 for (std::size_t i = 0; i < kTrackCount; ++i) {
                     if (const auto* p = engine_.track(i);
@@ -1258,7 +1306,19 @@ void MainComponent::timerCallback() {
             }
             audioStaleTicks_ = 0;
             restartCooldownTicks_ = 50;
-            deviceManager.restartLastAudioDevice();
+
+            if (watchdogRestartAttempts_ <= kMaxRestartAttempts) {
+                juce::Logger::writeToLog(
+                    "Watchdog: audio fige (2s sans bloc), relance du peripherique (tentative " +
+                    juce::String(watchdogRestartAttempts_) + "/" +
+                    juce::String(kMaxRestartAttempts) + ")");
+                deviceManager.restartLastAudioDevice();
+            } else if (watchdogRestartAttempts_ == kMaxRestartAttempts + 1) {
+                juce::Logger::writeToLog(
+                    "Watchdog: " + juce::String(kMaxRestartAttempts) +
+                    " relances echouees, basculement sur peripherique par defaut");
+                setAudioChannels(2, 2);  // re-enumeration complete, ignore la config cassee
+            }
         }
 
         // Cas 2 : echec du demarrage initial (moteur non initialise apres 2 s).
@@ -1296,11 +1356,9 @@ void MainComponent::timerCallback() {
     if (timerTickCount_ % 10 == 0) {
         headphoneMonitor_.poll(deviceManager);
     }
-    // La re-enumeration complete des peripheriques (scanForDevices -> JNI) ne sert
-    // qu'a rafraichir le selecteur : inutile a 1 Hz. On la limite a ~0,33 Hz pour
-    // alleger le thread message. Un hotplug reel declenche deja refreshDeviceList()
-    // via changeListenerCallback ; ce balayage periodique n'est qu'un filet pour les
-    // branchements qu'Android ne notifie pas toujours.
+    // Re-enumeration complete des peripheriques (scanForDevices -> ~15 JNI).
+    // Limitee a ~0,33 Hz : suffisant pour les branchements USB-C / BT que
+    // changeListenerCallback ne peut pas gerer (evite la boucle notification).
     if (timerTickCount_ % 30 == 0) {
         refreshDeviceList();
     }
@@ -1424,6 +1482,17 @@ void MainComponent::updateDiagnostics() {
     text << "Micro (crete) : " << juce::String(micLevel, 4)
          << (micLevel < 1e-4F ? "  [SILENCE - micro inactif ?]" : "  [signal OK]") << "\n";
 
+    // Mode split : etat de la capture micro telephone independante (AudioRecord).
+    // drop = consommateur en retard (FIFO plein) ; underrun = producteur en retard
+    // (FIFO vide -> silence). Des valeurs qui grimpent en continu signalent un
+    // probleme de cadence ; quelques unites au demarrage sont normales.
+    if (splitMicMode_) {
+        text << "Mode split : sortie USB + micro telephone (AudioRecord) - "
+             << (micCapture_.isRunning() ? "ACTIF" : "ARRETE") << "\n";
+        text << "  Capture micro : drop=" << juce::String(micCapture_.droppedSamples())
+             << "  underrun=" << juce::String(micCapture_.underrunSamples()) << "\n";
+    }
+
     const auto diag = engine_.diagnostics();
     text << "Moteur : " << static_cast<int>(diag.trackCount) << " pistes, "
          << static_cast<int>(diag.blocksProcessed) << " blocs, "
@@ -1472,6 +1541,15 @@ void MainComponent::refreshDeviceList() {
         return;
     }
 
+    // Guard anti-split (config USB-sortie + micro-integre refusee par Oboe).
+    // JUCE 8 : ComboBox::setSelectedId() appelle triggerAsyncUpdate() meme avec
+    // dontSendNotification → handleAsyncUpdate() → onChange() fire en ASYNCHRONE
+    // sur la message queue, APRES que ce scope soit revenu. Un reset immediat du
+    // flag laisserait applyDeviceSelection() s'executer sans protection.
+    // Solution : reset via callAsync() (see end of function), qui se retrouve APRES
+    // handleAsyncUpdate() dans la queue → le flag reste vrai au bon moment.
+    isRefreshingDeviceList_ = true;
+
     // Re-enumere la liste physique (necessaire au hotplug USB-C). En amont
     // OboeAudioIODeviceType::scanForDevices() est vide ; android.yml le patche pour
     // qu'il rebatisse la liste. Sur desktop / sans patch c'est un no-op inoffensif.
@@ -1506,40 +1584,143 @@ void MainComponent::refreshDeviceList() {
         }
     };
 
+    const juce::String outBefore = outputDeviceBox_.getText();
+    const juce::String inBefore = inputDeviceBox_.getText();
+
     fill(outputDeviceBox_, type->getDeviceNames(false), setup.outputDeviceName);
     fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
+
+    // Reset DIFFERE : JUCE 8's ComboBox::setSelectedId() appelle triggerAsyncUpdate()
+    // meme avec dontSendNotification, ce qui planifie handleAsyncUpdate() → onChange()
+    // dans la message queue. En postant le reset via callAsync(), on garantit l'ordre :
+    //   [handleAsyncUpdate] → [reset_flag]
+    // Ainsi, quand onChange() → applyDeviceSelection() s'execute, isRefreshingDeviceList_
+    // est encore true → retour immediat. Le reset ne s'effectue qu'apres.
+    //
+    // MAIS : si fill() n'a rien change (combos deja a jour), il n'y a PAS de
+    // triggerAsyncUpdate() en queue. Un callAsync() inconditionnnel poserait un
+    // reset_flag ORPHELIN qui pourrait preceder le triggerAsyncUpdate d'un futur
+    // fill(), rendant le guard inoperant. On ne differe que si fill a modifie au
+    // moins un combo (detection via getText() avant/apres).
+    const juce::String outAfter = outputDeviceBox_.getText();
+    const juce::String inAfter = inputDeviceBox_.getText();
+    if (outAfter != outBefore || inAfter != inBefore) {
+        // Un ou deux combos ont change → triggerAsyncUpdate() a ete enqueue.
+        // Le reset doit passer apres lui dans la queue.
+        juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
+    } else {
+        // Aucun changement → pas de triggerAsyncUpdate() → reset immediat sur.
+        isRefreshingDeviceList_ = false;
+    }
+}
+
+void MainComponent::applySplitMicMode(int mode) {
+    const bool wantSplit = (mode == 2);
+    if (wantSplit == splitMicMode_) return;
+
+    if (wantSplit) {
+        splitMicMode_ = true;
+        // 0 canal d'entree : JUCE/Oboe n'ouvre qu'un stream de SORTIE vers le casque USB.
+        // AndroidMicCapture ouvrira AudioRecord sur le micro integre independamment.
+        // prepareToPlay() sera rappele par JUCE et demarrera micCapture_.
+        inputDeviceBox_.setEnabled(false);
+        inputDeviceBox_.setText("Micro integre (mode split)", juce::dontSendNotification);
+        setAudioChannels(2, 0);
+        // Fallback si prepareToPlay n'a pas encore ete appele (JUCE peut etre async).
+        if (!micCapture_.isRunning()) {
+            if (micCapture_.start(static_cast<int>(sampleRate_))) {
+                juce::Logger::writeToLog(
+                    "AndroidMicCapture: capture micro telephone " +
+                    juce::String(static_cast<int>(sampleRate_)) + " Hz");
+            } else {
+                juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
+            }
+        }
+        juce::Logger::writeToLog("Mode split: sortie USB + micro telephone actif");
+    } else {
+        micCapture_.stop();
+        splitMicMode_ = false;
+        inputDeviceBox_.setEnabled(true);
+        setAudioChannels(2, 2);
+        refreshDeviceList();
+        juce::Logger::writeToLog("Mode split: desactive, retour entree JUCE normale");
+    }
 }
 
 void MainComponent::applyDeviceSelection() {
+    // En mode split, JUCE est configure en sortie seule (setAudioChannels(2,0)).
+    // Ne pas tenter de changer la config d'entree JUCE — c'est AudioRecord qui s'en charge.
+    if (splitMicMode_) return;
+
+    // Bloque les appels automatiques depuis refreshDeviceList() (JUCE 8 enqueue un
+    // handleAsyncUpdate() meme avec dontSendNotification ; le guard reste actif
+    // jusqu'apres ce callback grace au reset defere via callAsync).
+    if (isRefreshingDeviceList_) {
+        juce::Logger::writeToLog("applyDeviceSelection: bloquee (refresh auto)");
+        return;
+    }
     if (deviceManager.getCurrentDeviceTypeObject() == nullptr) {
         return;
     }
 
     auto setup = deviceManager.getAudioDeviceSetup();
     const juce::String outName = outputDeviceBox_.getText();
-    const juce::String inName = inputDeviceBox_.getText();
+    juce::String inName = inputDeviceBox_.getText();
 
-    // Pas de changement reel : on sort (evite la reentrance via changeListenerCallback
-    // -> refreshDeviceList qui pourrait re-declencher onChange).
+    // Invariant : si les combos refletent deja l'etat JUCE, il n'y a rien a faire.
+    // Ce check arrete aussi les re-entrees (onChange declenche par les setText ci-dessous).
+    if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
+        return;
+    }
+
+    // Android/Oboe refuse la config "split" (sortie USB + entree differente).
+    // Le HyperX Cloud III USB (type 22) expose egalement un micro USB ; si le meme
+    // nom apparait dans la liste d'entrees, on l'utilise pour eviter le split.
+    // NOTE : on ne conditionne PAS ce bloc a "outName != setup.outputDeviceName".
+    // Cas concerne : sortie deja USB, inchangee, mais refreshDeviceList() a remplace
+    // l'entree par le nom resolu du system default (ex. "SM-A266B built-in microphone").
+    // Sans ce garde, l'invariant ci-dessus laisserait passer la config split.
+    {
+        auto* type = deviceManager.getCurrentDeviceTypeObject();
+        const juce::StringArray inputNames = type->getDeviceNames(true);
+        if (inputNames.contains(outName) && inName != outName) {
+            juce::Logger::writeToLog("applyDeviceSelection: pairing entree USB '" + outName +
+                                     "' (etait: '" + inName + "')");
+            inName = outName;
+            inputDeviceBox_.setText(inName, juce::dontSendNotification);
+        }
+    }
+
+    // Re-verification apres pairing (le pairing peut avoir aligne les deux combos
+    // sur l'etat courant sans necessite de changer le peripherique).
     if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
         return;
     }
 
     setup.outputDeviceName = outName;
     setup.inputDeviceName = inName;
-    // On laisse Oboe renegocier debit/buffer (sinon forcer une taille peut rouvrir
-    // le peripherique en sortie seule -> perte du micro, cf. note de setAudioChannels).
     setup.sampleRate = 0;
     setup.bufferSize = 0;
     setup.useDefaultInputChannels = true;
     setup.useDefaultOutputChannels = true;
 
+    juce::Logger::writeToLog("Tentative peripherique -> sortie='" + outName + "' entree='" +
+                              inName + "'");
     const auto err = deviceManager.setAudioDeviceSetup(setup, true);
     if (err.isNotEmpty()) {
-        juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err + "'");
+        // Echec (ex. split USB refuse par Oboe). On aligne les combos sur le
+        // peripherique ACTUELLEMENT ouvert. Quand l'onChange async de ces setText
+        // rechecke l'invariant, out==setup.out && in==setup.in → retour immediat.
+        const auto actual = deviceManager.getAudioDeviceSetup();
+        juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err +
+                                 "' -> retour sur '" + actual.outputDeviceName + "'");
+        outputDeviceBox_.setText(actual.outputDeviceName, juce::dontSendNotification);
+        inputDeviceBox_.setText(actual.inputDeviceName, juce::dontSendNotification);
     } else {
-        juce::Logger::writeToLog("Peripherique audio -> sortie='" + outName + "' entree='" +
-                                 inName + "'");
+        const auto actual = deviceManager.getAudioDeviceSetup();
+        juce::Logger::writeToLog("Peripherique audio -> sortie='" +
+                                 actual.outputDeviceName + "' entree='" +
+                                 actual.inputDeviceName + "'");
     }
 }
 
@@ -1638,8 +1819,8 @@ void MainComponent::resized() {
                        trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
                        3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
                        kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
-                       kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 +
-                       kDiagH + pad;
+                       kAudioRowH + 4 + kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap +
+                       kCopyH + kGap / 2 + kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
@@ -1835,7 +2016,7 @@ void MainComponent::resized() {
         exportMixBtn_.setBounds(editRow.reduced(2));
     }
 
-    // Peripheriques audio section : [label] / [Sortie | combo] / [Entree | combo]
+    // Peripheriques audio section : [label] / [Sortie | combo] / [Entree | combo] / [Mode micro | combo]
     area.removeFromTop(kGap);
     audioDevLabel_.setBounds(area.removeFromTop(kAudioLblH));
     area.removeFromTop(4);
@@ -1849,6 +2030,12 @@ void MainComponent::resized() {
         auto row = area.removeFromTop(kAudioRowH);
         inputDevLabel_.setBounds(row.removeFromLeft(70));
         inputDeviceBox_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kAudioRowH);
+        micModeLabel_.setBounds(row.removeFromLeft(70));
+        micModeBox_.setBounds(row.reduced(2));
     }
 
     // Projet section

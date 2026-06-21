@@ -5,6 +5,54 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-21 — Mode split micro (sortie USB + micro téléphone) & robustesse périphériques
+
+### Mode split : casque USB en sortie + micro intégré en entrée (`app`, +1 classe)
+Besoin studio : **écouter une piste dans le casque USB tout en enregistrant
+depuis le micro du téléphone** (jouer la piste 1 dans le casque sans la
+repisser dans la capture de la piste 2). Impossible avec JUCE/Oboe en mode
+bidirectionnel : Android ouvre **une seule session audio sur un seul HAL** —
+le casque USB et le micro intégré sont sur deux HALs distincts, d'où le
+`jassert juce_Oboe_android.cpp:517` (« Failed to create audio session »).
+
+Solution : **`AndroidMicCapture`** capture le micro intégré via
+`android.media.AudioRecord` (JNI, `AUDIO_SOURCE_MIC` → toujours le micro
+physique même casque USB branché), **indépendamment** de JUCE/Oboe. En mode
+split : `setAudioChannels(2, 0)` → Oboe n'ouvre qu'un flux **de sortie** vers
+le casque USB, sans conflit de HAL.
+- Thread de capture (producteur) → `getNextAudioBlock` (consommateur) via une
+  file SPSC lock-free **`SampleFifo`** (transfert par blocs, ~341 ms de marge).
+- `prepareToPlay()` redémarre `AndroidMicCapture` à chaque changement de
+  périphérique pour rester synchronisé sur le bon `sampleRate`.
+- UI : combo « Mode micro » (apparié / split). En split, le combo d'entrée JUCE
+  est désactivé (l'entrée vient d'`AudioRecord`).
+- Anti-larsen conservé : `headphoneMonitor` détecte toujours le casque USB en
+  sortie → monitoring actif pendant l'enregistrement.
+
+### `SampleFifo` — file SPSC d'échantillons (`engine`, +8 tests)
+Nouvelle primitive lock-free dans `engine` : transfert **par blocs** d'échantillons
+float entre deux threads de cadences différentes (distincte de `RingBuffer<T>`
+qui transporte un élément à la fois). Capacité puissance de deux (masquage au
+lieu de modulo). **Primitive pure** : `write()/read()` renvoient le nombre
+transféré, sans compteur interne — la politique drop (over-run) vs
+contre-pression appartient à l'appelant. Tests : vide, FIFO, lecture/écriture
+partielles, wraparound long, reset, **stress concurrent 2 threads / 2 M
+échantillons** (ordre FIFO vérifié, zéro corruption).
+
+### Garde-fous & diagnostic
+- `AndroidMicCapture` : anti double-`start()` (pas de thread orphelin), borne
+  `sampleRate` ∈ [4 k, 192 k], compteurs **drop** (consommateur en retard) et
+  **underrun** (producteur en retard → silence), loggés à l'arrêt et affichés
+  en continu dans le panneau diagnostic en mode split.
+- Correctif CI : `AndroidMicCapture.cpp` ajouté à `VoiceLivePro.jucer` (le build
+  APK lit ses sources du `.jucer`, pas de `app/CMakeLists.txt` → sinon symboles
+  non définis au link de `libjuce_jni.so`).
+- Pairing USB anti-split rendu **indépendant du côté modifié** : la sortie USB
+  est appariée à l'entrée USB même quand seul le combo d'entrée a changé (cas du
+  nom résolu « SM-A266B built-in microphone »).
+
+---
+
 ## 2026-06-21 — Effets guitare, transport global, sélecteur de périphériques & audit RT
 
 ### Effets guitare (`dsp`, +5 effets, +21 tests)
