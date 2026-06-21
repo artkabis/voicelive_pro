@@ -1172,8 +1172,8 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     const std::span<float> monoOut{monoOut_.data(), numSamples};
 
     // Mode split : entree depuis AndroidMicCapture (ring buffer), pas depuis JUCE/Oboe.
-    // JUCE est configure avec 0 canal d'entree (setAudioChannels(2,0)) ; le buffer
-    // ne contient que les canaux de sortie — inputPtrs pointerait sur des donnees non-audio.
+    // JUCE reste en DUPLEX (2,2) avec USB headset pour les deux directions (meme HAL).
+    // L'entree JUCE est ignoree ici ; AudioRecord capte le micro integre du telephone.
     if (splitMicMode_ && micCapture_.isRunning()) {
         const int got = micCapture_.readSamples(monoIn_.data(), static_cast<int>(numSamples));
         if (got < static_cast<int>(numSamples))
@@ -1288,12 +1288,11 @@ void MainComponent::timerCallback() {
 
         // Cas 1 : audio vivant puis fige (2 s sans bloc).
         // Limite a kMaxRestartAttempts relances consecutives. Au-dela, setAudioChannels()
-        // repart de zero (System Default) plutot que de reboucler sur une config cassee
-        // (ex. casque USB en sortie + micro integre en entree = split refuse par Oboe).
-        // En mode split, on NE relance JAMAIS le peripherique : restartLastAudioDevice()
-        // et le fallback setAudioChannels(2,2) detruisent la config split (l'output se
-        // remet par defaut, l'entree casque est rouverte). Si le duplex se fige en split,
-        // l'utilisateur peut basculer le mode micro off/on pour reinitialiser proprement.
+        // repart de zero (System Default) plutot que de reboucler sur une config cassee.
+        // En mode split, on NE relance PAS via restartLastAudioDevice() : avec la config
+        // meme-HAL (USB+USB), la relance est en principe sure, mais on prefere laisser
+        // le diagnostic "stale=[GELE]" visible et laisser l'utilisateur basculer le mode
+        // micro pour reinitialiser, le temps de confirmer que le meme-HAL suffit.
         if (audioWasAlive_ && deviceRunning && isShowing() && audioStaleTicks_ >= 20 &&
             restartCooldownTicks_ == 0 && !splitMicMode_) {
             ++watchdogRestartAttempts_;
@@ -1503,6 +1502,11 @@ void MainComponent::updateDiagnostics() {
          << static_cast<int>(diag.droppedCommands) << " cmd perdues, metronome "
          << (diag.metronomeEnabled ? "ON" : "OFF") << ", master FX "
          << static_cast<int>(diag.masterEffectCount) << "\n";
+    // audioStaleTicks_ > 0 indique que le callback audio ne tourne plus (gele).
+    // En mode split, le watchdog est desactive : cette valeur permet de le detecter.
+    text << "Callback : " << (audioWasAlive_ ? "actif" : "jamais demarre")
+         << "  stale=" << audioStaleTicks_
+         << (audioStaleTicks_ >= 20 ? "  [GELE - audio coupe]" : "") << "\n";
 
     const juce::File dir =
         juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
@@ -1688,15 +1692,16 @@ void MainComponent::applyDeviceSelection() {
     if (splitMicMode_) {
         // En mode split, seule la sortie peut changer (l'entree JUCE est ignoree
         // dans getNextAudioBlock ; AudioRecord fournit le vrai micro telephone).
-        // On force un duplex sur le meme HAL : si le casque USB expose un micro,
-        // on l'utilise comme entree JUCE ; sinon chaine vide (System Default).
+        // On force TOUJOURS le meme nom pour l'entree et la sortie JUCE (meme HAL).
+        // Raison : Oboe refuse le duplex cross-HAL (sortie USB + entree integrée) et
+        // gele le callback audio sans retourner d'erreur → getNextAudioBlock() ne
+        // tourne plus et l'enregistrement reste vide. En forçant le meme peripherique
+        // pour les deux directions, Oboe reste sur un seul HAL et l'audio fonctionne.
+        // L'entree JUCE est de toute facon ignoree (AudioRecord fournit le micro).
         if (outName == setup.outputDeviceName) return;
-        auto* type = deviceManager.getCurrentDeviceTypeObject();
-        const juce::StringArray inputNames = type->getDeviceNames(true);
-        inName = inputNames.contains(outName) ? outName : juce::String();
+        inName = outName;
         juce::Logger::writeToLog("applyDeviceSelection (split): sortie -> '" + outName +
-                                 "' entree forcee -> '" +
-                                 (inName.isEmpty() ? juce::String("(default)") : inName) + "'");
+                                 "' entree forcee meme HAL -> '" + outName + "'");
     } else {
         inName = inputDeviceBox_.getText();
 
