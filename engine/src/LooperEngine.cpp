@@ -43,6 +43,24 @@ core::Status LooperEngine::prepare(core::SampleRate sampleRate, std::size_t trac
     return core::Status::success();
 }
 
+core::Status LooperEngine::reconfigure(core::SampleRate sampleRate, std::size_t maxBlockSize) {
+    if (tracks_.empty()) {
+        return core::Status::failure(core::ErrorCode::InvalidArgument,
+                                     "reconfigure() avant prepare() : aucune piste");
+    }
+    transport_.setSampleRate(sampleRate);
+    // Re-préparer les chaînes d'effets EXISTANTES (les objets Effect ne sont pas
+    // recréés, donc les pointeurs distribués à l'UI restent valides). Le contenu
+    // audio des pistes (LoopAudio) et leur état (LooperTrack) ne sont PAS touchés.
+    for (TrackProcessor& processor : tracks_) {
+        processor.effects().prepare(sampleRate, maxBlockSize);
+    }
+    metronome_.prepare(sampleRate, maxBlockSize);
+    masterChain_.prepare(sampleRate, maxBlockSize);
+    scratch_.assign(maxBlockSize, 0.0F);
+    return core::Status::success();
+}
+
 core::Status LooperEngine::applyCommand(const EngineCommand& command) {
     if (command.action == Cmd::SelectTrack) {
         if (command.track >= tracks_.size()) {
@@ -82,6 +100,9 @@ core::Status LooperEngine::applyCommand(const EngineCommand& command) {
             return core::Status::success();
         case Cmd::SetMuted:
             processor.setMuted(command.muted);
+            return core::Status::success();
+        case Cmd::Seek:
+            processor.setPlayhead(command.position);
             return core::Status::success();
         case Cmd::SelectTrack:
             break;  // déjà traité plus haut

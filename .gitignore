@@ -182,6 +182,7 @@ cython_debug/
 # Builds CMake additionnels
 build-release/
 build-rel/
+build-app/
 
 # Artefacts de test générés (écrits dans le CWD)
 vlpro_*

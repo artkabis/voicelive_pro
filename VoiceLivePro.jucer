@@ -12,6 +12,10 @@
             file="app/src/MainComponent.cpp"/>
       <FILE id="appMain" name="Main.cpp" compile="1" resource="0"
             file="app/src/Main.cpp"/>
+      <FILE id="appHpH" name="HeadphoneMonitor.h" compile="0" resource="0"
+            file="app/src/HeadphoneMonitor.h"/>
+      <FILE id="appHpC" name="HeadphoneMonitor.cpp" compile="1" resource="0"
+            file="app/src/HeadphoneMonitor.cpp"/>
     </GROUP>
     <GROUP id="grpCore" name="core">
       <FILE id="coreLoop" name="LooperTrack.cpp" compile="1" resource="0"
@@ -34,12 +38,24 @@
             file="dsp/src/Chorus.cpp"/>
       <FILE id="dspWah" name="Wah.cpp" compile="1" resource="0"
             file="dsp/src/Wah.cpp"/>
+      <FILE id="dspDist" name="Distortion.cpp" compile="1" resource="0"
+            file="dsp/src/Distortion.cpp"/>
+      <FILE id="dspGate" name="NoiseGate.cpp" compile="1" resource="0"
+            file="dsp/src/NoiseGate.cpp"/>
+      <FILE id="dspTrem" name="Tremolo.cpp" compile="1" resource="0"
+            file="dsp/src/Tremolo.cpp"/>
+      <FILE id="dspPhaser" name="Phaser.cpp" compile="1" resource="0"
+            file="dsp/src/Phaser.cpp"/>
+      <FILE id="dspFlanger" name="Flanger.cpp" compile="1" resource="0"
+            file="dsp/src/Flanger.cpp"/>
       <FILE id="dspPitch" name="PitchDetector.cpp" compile="1" resource="0"
             file="dsp/src/PitchDetector.cpp"/>
       <FILE id="dspComp" name="Compressor.cpp" compile="1" resource="0"
             file="dsp/src/Compressor.cpp"/>
       <FILE id="dspEq" name="Equalizer.cpp" compile="1" resource="0"
             file="dsp/src/Equalizer.cpp"/>
+      <FILE id="dspBpm" name="BpmDetector.cpp" compile="1" resource="0"
+            file="dsp/src/BpmDetector.cpp"/>
     </GROUP>
     <GROUP id="grpEngine" name="engine">
       <FILE id="engMixer" name="Mixer.cpp" compile="1" resource="0"
@@ -52,6 +68,8 @@
             file="engine/src/Metronome.cpp"/>
       <FILE id="engWav" name="WavFile.cpp" compile="1" resource="0"
             file="engine/src/WavFile.cpp"/>
+      <FILE id="engDevHint" name="AudioDeviceHint.cpp" compile="1" resource="0"
+            file="engine/src/AudioDeviceHint.cpp"/>
     </GROUP>
   </MAINGROUP>
   <JUCEOPTIONS JUCE_WEB_BROWSER="0" JUCE_USE_CURL="0" JUCE_STRICT_REFCOUNTEDPOINTER="1"/>
@@ -64,6 +82,7 @@
         <CONFIGURATION name="Debug" isDebug="1" optimisation="1"
                        headerPath="../../core/include&#10;../../dsp/include&#10;../../engine/include"/>
         <CONFIGURATION name="Release" isDebug="0" optimisation="3"
+                       cppFlags="-ffast-math -ftree-vectorize"
                        headerPath="../../core/include&#10;../../dsp/include&#10;../../engine/include"/>
       </CONFIGURATIONS>
       <MODULEPATHS>

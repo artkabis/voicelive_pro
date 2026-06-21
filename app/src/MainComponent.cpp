@@ -3,17 +3,34 @@
 
 #include <algorithm>
 #include <array>
+#include <complex>
+#include <cstddef>
 #include <memory>
 #include <span>
+#include <utility>
 
 #include "voicelive/core/AudioParams.hpp"
 #include "voicelive/core/LooperTrack.hpp"
 #include "voicelive/core/Music.hpp"
+#include "voicelive/core/ProjectSerializer.hpp"
 #include "voicelive/core/Transport.hpp"
+#include "voicelive/dsp/Chorus.hpp"
+#include "voicelive/dsp/Delay.hpp"
+#include "voicelive/dsp/Distortion.hpp"
+#include "voicelive/dsp/Equalizer.hpp"
+#include "voicelive/dsp/Flanger.hpp"
+#include "voicelive/dsp/NoiseGate.hpp"
+#include "voicelive/dsp/Phaser.hpp"
+#include "voicelive/dsp/Reverb.hpp"
+#include "voicelive/dsp/Tremolo.hpp"
+#include "voicelive/dsp/Wah.hpp"
 #include "voicelive/engine/ChannelUtils.hpp"
+#include "voicelive/engine/WavFile.hpp"
 
 namespace channels = voicelive::engine::channels;
 namespace music = voicelive::core::music;
+namespace project_io = voicelive::core::project_io;
+namespace wav = voicelive::engine::wav;
 using voicelive::core::Bpm;
 using voicelive::core::SampleRate;
 using voicelive::core::TrackState;
@@ -42,10 +59,356 @@ const char* actionName(EngineCommand::Action action) {
             return "SetMuted";
         case EngineCommand::Action::SelectTrack:
             return "Select";
+        case EngineCommand::Action::Seek:
+            return "Seek";
     }
     return "?";
 }
+
+// FFT Cooley-Tukey radix-2 DIT, in-place, sur tableau complexe de taille 2^N.
+// Applique une fenetre de Hann sur l'entree et calcule les magnitudes en sortie.
+// input  : kFftSize echantillons reels
+// output : kFftSize/2 magnitudes normalisees [0..1]
+template <int kFftSize>
+void magnitudeSpectrum(const float* input, float* output) {
+    using C = std::complex<float>;
+    std::array<C, kFftSize> buf;
+
+    for (int i = 0; i < kFftSize; ++i) {
+        const float w =
+            0.5F * (1.0F - std::cos(2.0F * juce::MathConstants<float>::pi * i / (kFftSize - 1)));
+        buf[static_cast<std::size_t>(i)] = C(input[i] * w, 0.0F);
+    }
+
+    // Permutation bit-reverse
+    for (int i = 1, j = 0; i < kFftSize; ++i) {
+        int bit = kFftSize >> 1;
+        for (; j & bit; bit >>= 1)
+            j ^= bit;
+        j ^= bit;
+        if (i < j) {
+            std::swap(buf[static_cast<std::size_t>(i)], buf[static_cast<std::size_t>(j)]);
+        }
+    }
+
+    // Papillons
+    for (int len = 2; len <= kFftSize; len <<= 1) {
+        const float ang = -2.0F * juce::MathConstants<float>::pi / static_cast<float>(len);
+        const C wlen(std::cos(ang), std::sin(ang));
+        for (int i = 0; i < kFftSize; i += len) {
+            C w(1.0F, 0.0F);
+            for (int j = 0; j < len / 2; ++j) {
+                const C u = buf[static_cast<std::size_t>(i + j)];
+                const C v = buf[static_cast<std::size_t>(i + j + len / 2)] * w;
+                buf[static_cast<std::size_t>(i + j)] = u + v;
+                buf[static_cast<std::size_t>(i + j + len / 2)] = u - v;
+                w *= wlen;
+            }
+        }
+    }
+
+    const float scale = 2.0F / static_cast<float>(kFftSize);
+    for (int i = 0; i < kFftSize / 2; ++i) {
+        output[i] = std::abs(buf[static_cast<std::size_t>(i)]) * scale;
+    }
+}
 }  // namespace
+
+// ─── TrackWaveform ────────────────────────────────────────────────────────────
+
+void MainComponent::TrackWaveform::setAudio(const voicelive::engine::LoopAudio* audio) noexcept {
+    audio_ = audio;
+}
+
+void MainComponent::TrackWaveform::setPlayhead(std::size_t pos, std::size_t totalLen,
+                                               double sr) noexcept {
+    playheadPos_ = pos;
+    playheadLen_ = totalLen;
+    playheadSr_ = sr > 0.0 ? sr : 48000.0;
+}
+
+float MainComponent::TrackWaveform::pixelToNorm(float px) const noexcept {
+    const float span = viewEnd_ - viewStart_;
+    return viewStart_ + (px / static_cast<float>(juce::jmax(1, getWidth()))) * span;
+}
+
+float MainComponent::TrackWaveform::normToPixel(float norm) const noexcept {
+    const float span = viewEnd_ - viewStart_;
+    if (span < 1e-6F)
+        return 0.0F;
+    return ((norm - viewStart_) / span) * static_cast<float>(getWidth());
+}
+
+void MainComponent::TrackWaveform::paint(juce::Graphics& g) {
+    const auto bounds = getLocalBounds().toFloat();
+    g.setColour(juce::Colour(0xFF0D1117));
+    g.fillRoundedRectangle(bounds, 4.0F);
+
+    if (audio_ == nullptr || audio_->length() == 0) {
+        g.setColour(juce::Colours::grey.withAlpha(0.35F));
+        g.setFont(juce::Font(juce::FontOptions{}.withHeight(11.0F)));
+        g.drawText("vide", bounds, juce::Justification::centred, false);
+        g.setColour(juce::Colours::grey.withAlpha(0.25F));
+        g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+        return;
+    }
+
+    const int w = getWidth();
+    const int h = getHeight();
+    const float midY = static_cast<float>(h) * 0.5F;
+    const std::size_t len = audio_->loopLength();
+
+    // Ligne centrale
+    g.setColour(juce::Colours::grey.withAlpha(0.25F));
+    g.drawHorizontalLine(static_cast<int>(midY), 2.0F, static_cast<float>(w) - 2.0F);
+
+    // Forme d'onde (peak-detection par pixel, avec cache).
+    // Le cache est invalide si la longueur, la largeur ou la fenetre de zoom change.
+    g.setColour(juce::Colour(0xFF00D4FF));
+    const int drawW = w - 4;
+    if (drawW > 0) {
+        const bool cacheInvalid = (len != cachedLoopLength_ || w != cachedWidth_ ||
+                                   viewStart_ != cachedViewStart_ || viewEnd_ != cachedViewEnd_);
+        if (cacheInvalid) {
+            peakCache_.resize(static_cast<std::size_t>(drawW), 0.0F);
+            const std::size_t sFirst =
+                static_cast<std::size_t>(viewStart_ * static_cast<float>(len));
+            const std::size_t sLast = static_cast<std::size_t>(viewEnd_ * static_cast<float>(len));
+            const std::size_t span = sLast > sFirst ? sLast - sFirst : 0;
+            for (int px = 0; px < drawW; ++px) {
+                const std::size_t sBegin =
+                    sFirst + static_cast<std::size_t>(px) * span / static_cast<std::size_t>(drawW);
+                const std::size_t sEnd = sFirst + static_cast<std::size_t>(px + 1) * span /
+                                                      static_cast<std::size_t>(drawW);
+                float peak = 0.0F;
+                for (std::size_t s = sBegin; s < sEnd && s < len; ++s) {
+                    peak = std::max(peak, std::abs(audio_->sampleAt(s)));
+                }
+                peakCache_[static_cast<std::size_t>(px)] = peak;
+            }
+            cachedLoopLength_ = len;
+            cachedWidth_ = w;
+            cachedViewStart_ = viewStart_;
+            cachedViewEnd_ = viewEnd_;
+        }
+        for (int px = 0; px < drawW; ++px) {
+            const float half =
+                juce::jmin(peakCache_[static_cast<std::size_t>(px)], 1.0F) * (midY - 2.0F);
+            if (half > 0.5F) {
+                g.drawVerticalLine(px + 2, midY - half, midY + half);
+            }
+        }
+    }
+
+    // Tete de lecture (playhead) — ligne verte animee + horodatage
+    if (playheadLen_ > 0 && audio_->length() > 0) {
+        const float normPh = static_cast<float>(playheadPos_) / static_cast<float>(playheadLen_);
+        const float xPh = normToPixel(normPh);
+        if (xPh >= 0.0F && xPh <= static_cast<float>(w)) {
+            g.setColour(juce::Colour(0xFF00FF88).withAlpha(0.25F));
+            g.fillRect(juce::jmax(0.0F, xPh - 1.5F), 0.0F, 4.0F, static_cast<float>(h));
+            g.setColour(juce::Colour(0xFF00FF88));
+            g.drawVerticalLine(static_cast<int>(xPh), 0.0F, static_cast<float>(h));
+            const double posSec = static_cast<double>(playheadPos_) / playheadSr_;
+            const juce::String timeStr = juce::String(static_cast<int>(posSec)) + "." +
+                                         juce::String(static_cast<int>(posSec * 10.0) % 10) + "s";
+            g.setFont(juce::Font(juce::FontOptions{}.withHeight(10.0F)));
+            g.setColour(juce::Colours::white.withAlpha(0.9F));
+            g.drawText(timeStr, static_cast<int>(xPh) + 3, 2, 38, 13, juce::Justification::left,
+                       false);
+        }
+    }
+
+    // Surbrillance de la selection (zone orange semi-transparente).
+    // N'affiche que la partie visible dans la fenetre de zoom.
+    if (selActive_ || std::abs(selEnd_ - selStart_) > 0.01F) {
+        const float normA = std::min(selStart_, selEnd_);
+        const float normB = std::max(selStart_, selEnd_);
+        const float x0 = juce::jlimit(0.0F, static_cast<float>(w), normToPixel(normA));
+        const float x1 = juce::jlimit(0.0F, static_cast<float>(w), normToPixel(normB));
+        if (x1 > x0) {
+            g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.28F));
+            g.fillRect(x0, 0.0F, x1 - x0, static_cast<float>(h));
+            g.setColour(juce::Colour(0xFFFFAA00).withAlpha(0.85F));
+            if (normA >= viewStart_) {
+                g.drawVerticalLine(static_cast<int>(x0), 2.0F, static_cast<float>(h) - 2.0F);
+            }
+            if (normB <= viewEnd_) {
+                g.drawVerticalLine(static_cast<int>(x1), 2.0F, static_cast<float>(h) - 2.0F);
+            }
+        }
+    }
+
+    // Indicateur de zoom : barre fine en bas montrant la fenetre visible.
+    if (viewEnd_ - viewStart_ < 0.999F) {
+        const float bH = 3.0F;
+        const float bY = static_cast<float>(h) - bH;
+        const float fW = static_cast<float>(w);
+        g.setColour(juce::Colours::grey.withAlpha(0.25F));
+        g.fillRect(0.0F, bY, fW, bH);
+        g.setColour(juce::Colour(0xFF00D4FF).withAlpha(0.7F));
+        g.fillRect(viewStart_ * fW, bY, (viewEnd_ - viewStart_) * fW, bH);
+    }
+
+    g.setColour(juce::Colours::grey.withAlpha(0.25F));
+    g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+}
+
+void MainComponent::TrackWaveform::mouseDown(const juce::MouseEvent& e) {
+    // Le 2e clic d'un double-clic a getNumberOfClicks()==2 ; laisser mouseDoubleClick
+    // le gerer — ne pas demarrer une selection qui serait aussitot effacee.
+    if (e.getNumberOfClicks() == 2) {
+        return;
+    }
+    selStart_ = pixelToNorm(static_cast<float>(e.x));
+    selEnd_ = selStart_;
+    selActive_ = false;
+    repaint();
+}
+
+void MainComponent::TrackWaveform::mouseDrag(const juce::MouseEvent& e) {
+    selEnd_ = pixelToNorm(static_cast<float>(e.x));
+    repaint();
+}
+
+void MainComponent::TrackWaveform::mouseUp(const juce::MouseEvent& /*e*/) {
+    selActive_ = std::abs(selEnd_ - selStart_) > 0.01F * (viewEnd_ - viewStart_);
+    repaint();
+}
+
+void MainComponent::TrackWaveform::mouseDoubleClick(const juce::MouseEvent& e) {
+    // Double-clic : deplace la tete de lecture a la position cliquee.
+    const float normPos = juce::jlimit(0.0F, 1.0F, pixelToNorm(static_cast<float>(e.x)));
+    if (onSeek) {
+        onSeek(normPos);
+    }
+    // Efface la micro-selection creee par le mouseDown du 2e clic (si applicable).
+    selActive_ = false;
+    selStart_ = normPos;
+    selEnd_ = normPos;
+    repaint();
+}
+
+void MainComponent::TrackWaveform::mouseMagnify(const juce::MouseEvent& e, float scaleFactor) {
+    // scaleFactor > 1 = on ecarte les doigts (zoom avant), < 1 = on les rapproche.
+    if (scaleFactor <= 0.0F) {
+        return;
+    }
+    const float pivotNorm = pixelToNorm(static_cast<float>(e.x));
+    const float oldSpan = viewEnd_ - viewStart_;
+    const float newSpan = juce::jlimit(0.02F, 1.0F, oldSpan / scaleFactor);
+
+    // Conserve le point pivote sous le doigt.
+    const float ratio = (pivotNorm - viewStart_) / juce::jmax(1e-6F, oldSpan);
+    viewStart_ = juce::jlimit(0.0F, 1.0F - newSpan, pivotNorm - ratio * newSpan);
+    viewEnd_ = juce::jlimit(viewStart_ + 0.02F, 1.0F, viewStart_ + newSpan);
+
+    // Snap au dézoom complet
+    if (newSpan > 0.97F) {
+        viewStart_ = 0.0F;
+        viewEnd_ = 1.0F;
+    }
+    repaint();
+}
+
+bool MainComponent::TrackWaveform::hasSelection() const noexcept {
+    return selActive_ && std::abs(selEnd_ - selStart_) > 0.02F;
+}
+
+std::pair<float, float> MainComponent::TrackWaveform::selectionNormalized() const noexcept {
+    return {std::min(selStart_, selEnd_), std::max(selStart_, selEnd_)};
+}
+
+void MainComponent::TrackWaveform::clearSelection() noexcept {
+    selActive_ = false;
+    selStart_ = 0.0F;
+    selEnd_ = 0.0F;
+    repaint();
+}
+
+void MainComponent::TrackWaveform::zoomBy(float factor) noexcept {
+    // Zoom centre sur le milieu de la fenetre visible.
+    const float center = (viewStart_ + viewEnd_) * 0.5F;
+    const float oldSpan = viewEnd_ - viewStart_;
+    const float newSpan = juce::jlimit(0.02F, 1.0F, oldSpan / juce::jmax(1e-3F, factor));
+    viewStart_ = juce::jlimit(0.0F, 1.0F - newSpan, center - newSpan * 0.5F);
+    viewEnd_ = juce::jlimit(viewStart_ + 0.02F, 1.0F, viewStart_ + newSpan);
+    if (newSpan > 0.97F) {
+        viewStart_ = 0.0F;
+        viewEnd_ = 1.0F;
+    }
+    repaint();
+}
+
+// ─── SpectrumView ─────────────────────────────────────────────────────────────
+
+void MainComponent::SpectrumView::update(std::span<const float> analysis) {
+    if (static_cast<int>(analysis.size()) < kFftSize) {
+        return;
+    }
+    std::array<float, kFftSize / 2> mag;
+    magnitudeSpectrum<kFftSize>(analysis.data() + analysis.size() - kFftSize, mag.data());
+
+    constexpr float kAlpha = 0.25F;
+    for (int i = 0; i < kFftSize / 2; ++i) {
+        smoothed_[static_cast<std::size_t>(i)] =
+            (1.0F - kAlpha) * smoothed_[static_cast<std::size_t>(i)] +
+            kAlpha * juce::jlimit(0.0F, 1.0F, mag[static_cast<std::size_t>(i)]);
+    }
+    hasData_ = true;
+    repaint();
+}
+
+void MainComponent::SpectrumView::paint(juce::Graphics& g) {
+    const auto bounds = getLocalBounds().toFloat();
+    g.setColour(juce::Colour(0xFF0D1117));
+    g.fillRoundedRectangle(bounds, 4.0F);
+
+    if (!hasData_) {
+        g.setColour(juce::Colours::grey.withAlpha(0.35F));
+        g.setFont(juce::Font(juce::FontOptions{}.withHeight(11.0F)));
+        g.drawText("Spectre temps-reel", bounds, juce::Justification::centred, false);
+        g.setColour(juce::Colours::grey.withAlpha(0.25F));
+        g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+        return;
+    }
+
+    const int w = getWidth();
+    const int h = getHeight();
+    constexpr int kBins = 192;
+    const float barW = static_cast<float>(w) / static_cast<float>(kBins);
+
+    for (int i = 0; i < kBins && i < kFftSize / 2; ++i) {
+        const float level = smoothed_[static_cast<std::size_t>(i)];
+        const float barH = level * static_cast<float>(h - 2);
+        const float x = static_cast<float>(i) * barW;
+        const float y = static_cast<float>(h) - barH - 1.0F;
+
+        const float t = static_cast<float>(i) / static_cast<float>(kBins);
+        const juce::Colour col =
+            juce::Colour(0xFF00D4FF).interpolatedWith(juce::Colour(0xFF00FF88), t);
+        g.setColour(col.withAlpha(0.85F));
+        g.fillRect(x, y, juce::jmax(1.0F, barW - 1.0F), barH);
+    }
+
+    // Graduations de frequence
+    g.setColour(juce::Colours::grey.withAlpha(0.4F));
+    g.setFont(juce::Font(juce::FontOptions{}.withHeight(9.0F)));
+    for (int khz : {1, 2, 4, 8}) {
+        const int bin = khz * 1000 * kFftSize / 48000;
+        if (bin < kBins) {
+            const float x = static_cast<float>(bin) * barW;
+            g.drawVerticalLine(static_cast<int>(x), 0.0F, static_cast<float>(h));
+            g.drawText(juce::String(khz) + "k", static_cast<int>(x) + 2, 2, 28, 14,
+                       juce::Justification::left, false);
+        }
+    }
+
+    g.setColour(juce::Colours::grey.withAlpha(0.25F));
+    g.drawRoundedRectangle(bounds.reduced(0.5F), 4.0F, 1.0F);
+}
+
+// ─── AppLogger ────────────────────────────────────────────────────────────────
 
 void MainComponent::AppLogger::logMessage(const juce::String& message) {
     {
@@ -55,7 +418,7 @@ void MainComponent::AppLogger::logMessage(const juce::String& message) {
             lines_.remove(0);
         }
     }
-    juce::Logger::outputDebugString(message);  // → logcat sur Android
+    juce::Logger::outputDebugString(message);
 }
 
 juce::String MainComponent::AppLogger::snapshot() const {
@@ -63,135 +426,344 @@ juce::String MainComponent::AppLogger::snapshot() const {
     return lines_.joinIntoString("\n");
 }
 
-MainComponent::MainComponent() {
-    // Capture tous les logs (les nôtres + JUCE) pour les rendre copiables.
-    juce::Logger::setCurrentLogger(&appLogger_);
-    juce::Logger::writeToLog("VoiceLive Pro démarré");
+// ─── MainComponent ────────────────────────────────────────────────────────────
 
-    // Demande explicite de la permission micro (indispensable à l'entrée audio).
+MainComponent::MainComponent() {
+    juce::Logger::setCurrentLogger(&appLogger_);
+    juce::Logger::writeToLog("VoiceLive Pro demarre");
+
+    deviceManager.addChangeListener(this);
+    headphoneMonitor_.attach(deviceManager);
+    contentPane_.addAndMakeVisible(headphoneLed_);
+
+    viewport_.setScrollBarsShown(true, false);
+    viewport_.setViewedComponent(&contentPane_, false);
+    addAndMakeVisible(viewport_);
+
     juce::RuntimePermissions::request(juce::RuntimePermissions::recordAudio, [](bool granted) {
-        juce::Logger::writeToLog(granted ? "Permission micro : ACCORDÉE"
-                                         : "Permission micro : REFUSÉE");
+        juce::Logger::writeToLog(granted ? "Permission micro : OK" : "Permission micro : REFUSEE");
     });
 
     titleLabel_.setText("VoiceLive Pro", juce::dontSendNotification);
     titleLabel_.setJustificationType(juce::Justification::centred);
     titleLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(22.0F)));
-    addAndMakeVisible(titleLabel_);
+    contentPane_.addAndMakeVisible(titleLabel_);
 
-    tunerLabel_.setText("Accordeur : —", juce::dontSendNotification);
-    tunerLabel_.setJustificationType(juce::Justification::centred);
-    addAndMakeVisible(tunerLabel_);
+    tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
+    tunerLabel_.setJustificationType(juce::Justification::centredLeft);
+    contentPane_.addAndMakeVisible(tunerLabel_);
+
+    tunerActiveButton_.setButtonText("Accordeur");
+    tunerActiveButton_.setToggleState(false, juce::dontSendNotification);
+    tunerActiveButton_.onClick = [this] {
+        if (!tunerActiveButton_.getToggleState()) {
+            tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
+        }
+    };
+    contentPane_.addAndMakeVisible(tunerActiveButton_);
 
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         setupTrackStrip(i);
+        contentPane_.addAndMakeVisible(waveforms_[i]);
+        setupFxPanel(i);
+
+        // Double-clic sur la waveform : deplace la tete de lecture.
+        waveforms_[i].onSeek = [this, i](float normPos) {
+            if (const auto* proc = engine_.track(i); proc != nullptr) {
+                const std::size_t loopLen = proc->audio().loopLength();
+                if (loopLen == 0) {
+                    return;
+                }
+                const std::size_t targetSample =
+                    static_cast<std::size_t>(normPos * static_cast<float>(loopLen));
+                EngineCommand cmd;
+                cmd.action = EngineCommand::Action::Seek;
+                cmd.track = i;
+                cmd.position = targetSample;
+                engine_.post(cmd);
+                juce::Logger::writeToLog("Seek piste " + juce::String(static_cast<int>(i) + 1) +
+                                         " -> " + juce::String(static_cast<int>(targetSample)));
+            }
+        };
+
+        cutBtns_[i].setButtonText("Cut Sel");
+        cutBtns_[i].onClick = [this, i] { cutSelection(i); };
+        contentPane_.addAndMakeVisible(cutBtns_[i]);
+
+        trimBtns_[i].setButtonText("Trim Sel");
+        trimBtns_[i].onClick = [this, i] { trimToSelection(i); };
+        contentPane_.addAndMakeVisible(trimBtns_[i]);
+
+        exportTrackBtns_[i].setButtonText("Export " + juce::String(static_cast<int>(i) + 1));
+        exportTrackBtns_[i].onClick = [this, i] { exportTrack(i); };
+        contentPane_.addAndMakeVisible(exportTrackBtns_[i]);
+
+        bpmSyncBtns_[i].setButtonText("BPM");
+        bpmSyncBtns_[i].onClick = [this, i] { detectAndSyncBpm(i); };
+        contentPane_.addAndMakeVisible(bpmSyncBtns_[i]);
+
+        includeBtns_[i].setButtonText("MIX");
+        includeBtns_[i].setToggleState(true, juce::dontSendNotification);
+        contentPane_.addAndMakeVisible(includeBtns_[i]);
+
+        zoomInBtns_[i].setButtonText("+");
+        zoomInBtns_[i].onClick = [this, i] { waveforms_[i].zoomBy(3.0F); };
+        contentPane_.addAndMakeVisible(zoomInBtns_[i]);
+
+        zoomOutBtns_[i].setButtonText("-");
+        zoomOutBtns_[i].onClick = [this, i] { waveforms_[i].zoomBy(1.0F / 3.0F); };
+        contentPane_.addAndMakeVisible(zoomOutBtns_[i]);
     }
 
-    // Transport : métronome + tempo.
-    transportLabel_.setText("Transport", juce::dontSendNotification);
-    addAndMakeVisible(transportLabel_);
-    metronomeButton_.setButtonText("Métronome");
+    // Transport global : [▶ Toutes] [⏸] [⏹]
+    globalPlayBtn_.setButtonText(juce::CharPointer_UTF8("\xe2\x96\xb6 Toutes"));
+    globalPlayBtn_.onClick = [this] { playAllTracks(); };
+    contentPane_.addAndMakeVisible(globalPlayBtn_);
+
+    globalPauseBtn_.setButtonText(juce::CharPointer_UTF8("\xe2\x8f\xb8 Pause"));
+    globalPauseBtn_.onClick = [this] { pauseAllTracks(); };
+    contentPane_.addAndMakeVisible(globalPauseBtn_);
+
+    globalStopBtn_.setButtonText(juce::CharPointer_UTF8("\xe2\x8f\xb9 Stop"));
+    globalStopBtn_.onClick = [this] { stopAllTracks(); };
+    contentPane_.addAndMakeVisible(globalStopBtn_);
+
+    // Transport
+    metronomeButton_.setButtonText("Metronome");
     metronomeButton_.onClick = [this] {
         engine_.setMetronomeEnabled(metronomeButton_.getToggleState());
     };
-    addAndMakeVisible(metronomeButton_);
+    contentPane_.addAndMakeVisible(metronomeButton_);
+
     bpmSlider_.setRange(40.0, 240.0, 1.0);
     bpmSlider_.setValue(120.0, juce::dontSendNotification);
     bpmSlider_.setTextValueSuffix(" BPM");
     bpmSlider_.onValueChange = [this] {
         engine_.transport().setBpm(Bpm::fromValue(bpmSlider_.getValue()));
     };
-    addAndMakeVisible(bpmSlider_);
+    contentPane_.addAndMakeVisible(bpmSlider_);
 
-    // Mastering : égaliseur 3 bandes inséré une fois dans le bus master.
-    masterLabel_.setText("Mastering (EQ)", juce::dontSendNotification);
-    addAndMakeVisible(masterLabel_);
+    // EQ master
+    masterLabel_.setText("Mastering EQ 3 bandes", juce::dontSendNotification);
+    contentPane_.addAndMakeVisible(masterLabel_);
     {
         auto equalizer = std::make_unique<voicelive::dsp::Equalizer>();
         masterEq_ = equalizer.get();
         engine_.masterEffects().add(std::move(equalizer));
     }
-    const auto setupEq = [this](juce::Slider& slider, const juce::String& name) {
+
+    const auto setupEqSlider = [this](juce::Slider& slider) {
         slider.setRange(-12.0, 12.0, 0.5);
         slider.setValue(0.0, juce::dontSendNotification);
-        slider.setSliderStyle(juce::Slider::LinearVertical);
-        slider.setTextBoxStyle(juce::Slider::TextBoxBelow, false, 50, 18);
-        slider.setName(name);
-        addAndMakeVisible(slider);
+        slider.setSliderStyle(juce::Slider::LinearHorizontal);
+        slider.setTextBoxStyle(juce::Slider::TextBoxRight, false, 55, 20);
+        contentPane_.addAndMakeVisible(slider);
     };
-    setupEq(lowEqSlider_, "Grave");
-    setupEq(midEqSlider_, "Médium");
-    setupEq(highEqSlider_, "Aigu");
+
+    lowEqLabel_.setText("Grave", juce::dontSendNotification);
+    lowEqLabel_.setJustificationType(juce::Justification::centredRight);
+    contentPane_.addAndMakeVisible(lowEqLabel_);
+    setupEqSlider(lowEqSlider_);
     lowEqSlider_.onValueChange = [this] {
         if (masterEq_ != nullptr) {
             masterEq_->setLowGain(static_cast<float>(lowEqSlider_.getValue()));
         }
     };
+
+    midEqLabel_.setText("Medium", juce::dontSendNotification);
+    midEqLabel_.setJustificationType(juce::Justification::centredRight);
+    contentPane_.addAndMakeVisible(midEqLabel_);
+    setupEqSlider(midEqSlider_);
     midEqSlider_.onValueChange = [this] {
         if (masterEq_ != nullptr) {
             masterEq_->setMidGain(static_cast<float>(midEqSlider_.getValue()));
         }
     };
+
+    highEqLabel_.setText("Aigu", juce::dontSendNotification);
+    highEqLabel_.setJustificationType(juce::Justification::centredRight);
+    contentPane_.addAndMakeVisible(highEqLabel_);
+    setupEqSlider(highEqSlider_);
     highEqSlider_.onValueChange = [this] {
         if (masterEq_ != nullptr) {
             masterEq_->setHighGain(static_cast<float>(highEqSlider_.getValue()));
         }
     };
 
-    // Panneau de diagnostic : rend l'app observable sur mobile (pas de console).
+    // Spectre
+    contentPane_.addAndMakeVisible(spectrumView_);
+
+    // Mix Master section
+    mixLabel_.setText("Mix Master", juce::dontSendNotification);
+    mixLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
+    contentPane_.addAndMakeVisible(mixLabel_);
+
+    renderMixBtn_.setButtonText("Render Mix");
+    renderMixBtn_.onClick = [this] { renderMixToTrack(); };
+    contentPane_.addAndMakeVisible(renderMixBtn_);
+
+    mixWaveform_.setAudio(&mixTrackAudio_);
+    contentPane_.addAndMakeVisible(mixWaveform_);
+
+    mixPlayBtn_.setButtonText("Play");
+    mixPlayBtn_.onClick = [this] {
+        if (mixTransport_.getLengthInSeconds() <= 0.0) {
+            return;
+        }
+        if (mixTransport_.hasStreamFinished()) {
+            mixTransport_.setPosition(0.0);
+        }
+        mixTransport_.start();
+    };
+    contentPane_.addAndMakeVisible(mixPlayBtn_);
+
+    mixPauseBtn_.setButtonText("Pause");
+    mixPauseBtn_.onClick = [this] { mixTransport_.stop(); };
+    contentPane_.addAndMakeVisible(mixPauseBtn_);
+
+    mixStopBtn_.setButtonText("Stop");
+    mixStopBtn_.onClick = [this] {
+        mixTransport_.stop();
+        mixTransport_.setPosition(0.0);
+        mixWaveform_.setPlayhead(0, 0, sampleRate_);
+        mixWaveform_.repaint();
+    };
+    contentPane_.addAndMakeVisible(mixStopBtn_);
+
+    mixTimeLabel_.setText("--:--", juce::dontSendNotification);
+    mixTimeLabel_.setJustificationType(juce::Justification::centredLeft);
+    mixTimeLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(14.0F)));
+    contentPane_.addAndMakeVisible(mixTimeLabel_);
+
+    cutMixBtn_.setButtonText("Cut Sel");
+    cutMixBtn_.onClick = [this] { cutMixSelection(); };
+    contentPane_.addAndMakeVisible(cutMixBtn_);
+
+    trimMixBtn_.setButtonText("Trim Sel");
+    trimMixBtn_.onClick = [this] { trimMixSelection(); };
+    contentPane_.addAndMakeVisible(trimMixBtn_);
+
+    exportMixBtn_.setButtonText("Export Mix WAV");
+    exportMixBtn_.onClick = [this] { exportMix(); };
+    contentPane_.addAndMakeVisible(exportMixBtn_);
+
+    // Section peripheriques audio : choix explicite sortie/entree (nom + type).
+    // Les listes sont remplies par refreshDeviceList() apres setAudioChannels().
+    audioDevLabel_.setText("Peripheriques audio", juce::dontSendNotification);
+    audioDevLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
+    contentPane_.addAndMakeVisible(audioDevLabel_);
+
+    outputDevLabel_.setText("Sortie", juce::dontSendNotification);
+    outputDevLabel_.setJustificationType(juce::Justification::centredLeft);
+    contentPane_.addAndMakeVisible(outputDevLabel_);
+    outputDeviceBox_.setTextWhenNoChoicesAvailable("(aucun)");
+    outputDeviceBox_.onChange = [this] { applyDeviceSelection(); };
+    contentPane_.addAndMakeVisible(outputDeviceBox_);
+
+    inputDevLabel_.setText("Entree", juce::dontSendNotification);
+    inputDevLabel_.setJustificationType(juce::Justification::centredLeft);
+    contentPane_.addAndMakeVisible(inputDevLabel_);
+    inputDeviceBox_.setTextWhenNoChoicesAvailable("(aucun)");
+    inputDeviceBox_.onChange = [this] { applyDeviceSelection(); };
+    contentPane_.addAndMakeVisible(inputDeviceBox_);
+
+    // I/O section
+    ioLabel_.setText("Projet", juce::dontSendNotification);
+    ioLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
+    contentPane_.addAndMakeVisible(ioLabel_);
+
+    saveProjectBtn_.setButtonText("Sauvegarder");
+    saveProjectBtn_.onClick = [this] { saveProject(); };
+    contentPane_.addAndMakeVisible(saveProjectBtn_);
+
+    loadProjectBtn_.setButtonText("Charger");
+    loadProjectBtn_.onClick = [this] { loadProject(); };
+    contentPane_.addAndMakeVisible(loadProjectBtn_);
+
+    // Diagnostic : TextEditor dans un Viewport dedie.
+    // Le TextEditor desactive l'interception des evenements souris pour laisser
+    // logViewport_ capter le drag-to-scroll. Sans cela, sur Android, le glissement
+    // dans la zone de logs faisait defiler la page entiere au lieu du texte.
     diagView_.setMultiLine(true);
     diagView_.setReadOnly(true);
     diagView_.setCaretVisible(false);
-    diagView_.setScrollbarsShown(true);
+    diagView_.setScrollbarsShown(false);  // barre geree par logViewport_
     diagView_.setFont(juce::Font(juce::FontOptions{}.withHeight(13.0F)));
-    addAndMakeVisible(diagView_);
+    diagView_.setInterceptsMouseClicks(false, false);
+
+    logViewport_.setScrollBarsShown(true, false);  // barre verticale uniquement
+    logViewport_.setScrollOnDragMode(juce::Viewport::ScrollOnDragMode::all);
+    logViewport_.setViewedComponent(&diagView_, false);
+    // Le contentHolder interne du Viewport intercepte les events avant le Viewport
+    // lui-meme, ce qui empeche le drag-to-scroll. On le rend transparent : les events
+    // remontent au Viewport qui les gere pour le defilement.
+    for (int ci = 0; ci < logViewport_.getNumChildComponents(); ++ci) {
+        if (auto* child = logViewport_.getChildComponent(ci);
+            child != nullptr && child->isParentOf(&diagView_)) {
+            child->setInterceptsMouseClicks(false, false);
+            break;
+        }
+    }
+    contentPane_.addAndMakeVisible(logViewport_);
 
     copyButton_.setButtonText("Copier le diagnostic");
     copyButton_.onClick = [this] {
         juce::SystemClipboard::copyTextToClipboard(diagView_.getText());
-        juce::Logger::writeToLog("Diagnostic copié dans le presse-papier");
+        juce::Logger::writeToLog("Diagnostic copie dans le presse-papier");
     };
-    addAndMakeVisible(copyButton_);
+    contentPane_.addAndMakeVisible(copyButton_);
 
     analysis_.assign(kAnalysisSize, 0.0F);
-    setSize(760, 720);
+    setSize(400, 800);
     setAudioChannels(2, 2);
+    refreshDeviceList();  // peuple les listes une fois le type de peripherique cree
+
+    // NB (Android) : ne PAS forcer setAudioDeviceSetup(bufferSize=256) ici.
+    // JUCE pilote Oboe, qui négocie déjà le buffer basse latence optimal. Forcer
+    // une taille rouvrait le périphérique en sortie seule (perte du micro → plus
+    // d'enregistrement) et la taille demandée était de toute façon ignorée. La
+    // latence est gérée par Oboe + les flags Release (-O3 -ffast-math).
+
     startTimerHz(10);
 }
 
 MainComponent::~MainComponent() {
     stopTimer();
+    deviceManager.removeChangeListener(this);
+    headphoneMonitor_.detach(deviceManager);  // avant shutdownAudio pour eviter callbacks tardifs
     shutdownAudio();
     juce::Logger::setCurrentLogger(nullptr);
 }
+
+// ─── Setup helpers ────────────────────────────────────────────────────────────
 
 void MainComponent::setupTrackStrip(std::size_t index) {
     TrackStrip& strip = strips_[index];
     strip.label.setText("Piste " + juce::String(static_cast<int>(index) + 1),
                         juce::dontSendNotification);
-    addAndMakeVisible(strip.label);
+    contentPane_.addAndMakeVisible(strip.label);
 
     strip.recordButton.setButtonText("Rec");
     strip.recordButton.onClick = [this, index] { recordOrFinish(index); };
-    addAndMakeVisible(strip.recordButton);
+    contentPane_.addAndMakeVisible(strip.recordButton);
 
     strip.playButton.setButtonText("Play");
     strip.playButton.onClick = [this, index] {
         postCommand(EngineCommand::Action::Play, index, 1.0F, false);
     };
-    addAndMakeVisible(strip.playButton);
+    contentPane_.addAndMakeVisible(strip.playButton);
 
     strip.stopButton.setButtonText("Stop");
     strip.stopButton.onClick = [this, index] {
         postCommand(EngineCommand::Action::Stop, index, 1.0F, false);
     };
-    addAndMakeVisible(strip.stopButton);
+    contentPane_.addAndMakeVisible(strip.stopButton);
 
     strip.clearButton.setButtonText("Clear");
     strip.clearButton.onClick = [this, index] {
         postCommand(EngineCommand::Action::Clear, index, 1.0F, false);
     };
-    addAndMakeVisible(strip.clearButton);
+    contentPane_.addAndMakeVisible(strip.clearButton);
 
     strip.gainSlider.setRange(0.0, 2.0, 0.01);
     strip.gainSlider.setValue(1.0, juce::dontSendNotification);
@@ -201,39 +773,365 @@ void MainComponent::setupTrackStrip(std::size_t index) {
         postCommand(EngineCommand::Action::SetGain, index,
                     static_cast<float>(strips_[index].gainSlider.getValue()), false);
     };
-    addAndMakeVisible(strip.gainSlider);
+    contentPane_.addAndMakeVisible(strip.gainSlider);
 
     strip.muteButton.setButtonText("Mute");
     strip.muteButton.onClick = [this, index] {
         postCommand(EngineCommand::Action::SetMuted, index, 1.0F,
                     strips_[index].muteButton.getToggleState());
     };
-    addAndMakeVisible(strip.muteButton);
+    contentPane_.addAndMakeVisible(strip.muteButton);
 }
 
-void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
-    const auto blockSize = static_cast<std::size_t>(juce::jmax(1, samplesPerBlockExpected));
-    const auto rate = static_cast<unsigned>(juce::jmax(1.0, sampleRate));
-    const auto capacity = static_cast<std::size_t>(juce::jmax(1.0, sampleRate) * 30.0);
+void MainComponent::setupFxPanel(std::size_t index) {
+    auto& fx = fxPanels_[index];
 
-    if (const auto sr = SampleRate::create(rate); sr.ok()) {
-        static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, blockSize));
-        // Trace visible via `adb logcat` sur Android (sinon invisible sur mobile).
-        juce::Logger::writeToLog("VoiceLive: audio prêt " + juce::String(rate) + " Hz, bloc " +
-                                 juce::String(static_cast<int>(blockSize)));
-    } else {
-        juce::Logger::writeToLog("VoiceLive: ERREUR fréquence " + juce::String(rate));
+    // Helper : configure un slider de parametre d'effet (compact, pas de textbox)
+    const auto makeParamSlider = [this](juce::Slider& s, double lo, double hi, double init) {
+        s.setRange(lo, hi, 0.0);
+        s.setValue(init, juce::dontSendNotification);
+        s.setSliderStyle(juce::Slider::LinearHorizontal);
+        s.setTextBoxStyle(juce::Slider::NoTextBox, false, 0, 0);
+        contentPane_.addAndMakeVisible(s);
+    };
+
+    // Reverb
+    fx.reverbBtn.setButtonText("REV");
+    fx.reverbBtn.setClickingTogglesState(true);
+    fx.reverbBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.reverb)
+            return;
+        const bool on = f.reverbBtn.getToggleState();
+        f.reverb->setWet(on ? static_cast<float>(f.reverbWetSlider.getValue()) : 0.0F);
+        f.reverb->setDry(on ? 0.7F : 1.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.reverbBtn);
+
+    makeParamSlider(fx.reverbWetSlider, 0.0, 1.0, 0.35);
+    fx.reverbWetSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.reverb && f.reverbBtn.getToggleState()) {
+            f.reverb->setWet(static_cast<float>(f.reverbWetSlider.getValue()));
+        }
+    };
+
+    // Delay
+    fx.delayBtn.setButtonText("DLY");
+    fx.delayBtn.setClickingTogglesState(true);
+    fx.delayBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.delay)
+            return;
+        f.delay->setMix(f.delayBtn.getToggleState() ? 0.45F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.delayBtn);
+
+    makeParamSlider(fx.delayTimeSlider, 0.05, 1.0, 0.25);
+    fx.delayTimeSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.delay) {
+            f.delay->setDelaySeconds(static_cast<float>(f.delayTimeSlider.getValue()));
+        }
+    };
+
+    // Wah
+    fx.wahBtn.setButtonText("WAH");
+    fx.wahBtn.setClickingTogglesState(true);
+    fx.wahBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.wah)
+            return;
+        f.wah->setMix(f.wahBtn.getToggleState() ? 1.0F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.wahBtn);
+
+    makeParamSlider(fx.wahRateSlider, 0.1, 5.0, 1.5);
+    fx.wahRateSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.wah) {
+            f.wah->setRate(static_cast<float>(f.wahRateSlider.getValue()));
+        }
+    };
+
+    // Chorus
+    fx.chorusBtn.setButtonText("CHR");
+    fx.chorusBtn.setClickingTogglesState(true);
+    fx.chorusBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.chorus)
+            return;
+        f.chorus->setMix(f.chorusBtn.getToggleState()
+                             ? static_cast<float>(f.chorusDepthSlider.getValue())
+                             : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.chorusBtn);
+
+    makeParamSlider(fx.chorusDepthSlider, 0.0, 1.0, 0.5);
+    fx.chorusDepthSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.chorus && f.chorusBtn.getToggleState()) {
+            f.chorus->setMix(static_cast<float>(f.chorusDepthSlider.getValue()));
+        }
+    };
+
+    // Distortion (drive)
+    fx.distBtn.setButtonText("DST");
+    fx.distBtn.setClickingTogglesState(true);
+    fx.distBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.distortion)
+            return;
+        f.distortion->setMix(f.distBtn.getToggleState() ? 1.0F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.distBtn);
+
+    makeParamSlider(fx.distDriveSlider, 1.0, 30.0, 8.0);
+    fx.distDriveSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.distortion) {
+            f.distortion->setDrive(static_cast<float>(f.distDriveSlider.getValue()));
+        }
+    };
+
+    // Noise Gate (threshold dB)
+    fx.gateBtn.setButtonText("GATE");
+    fx.gateBtn.setClickingTogglesState(true);
+    fx.gateBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.gate)
+            return;
+        f.gate->setEnabled(f.gateBtn.getToggleState());
+    };
+    contentPane_.addAndMakeVisible(fx.gateBtn);
+
+    makeParamSlider(fx.gateThreshSlider, -80.0, 0.0, -45.0);
+    fx.gateThreshSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.gate) {
+            f.gate->setThreshold(static_cast<float>(f.gateThreshSlider.getValue()));
+        }
+    };
+
+    // Tremolo (rate)
+    fx.tremBtn.setButtonText("TRM");
+    fx.tremBtn.setClickingTogglesState(true);
+    fx.tremBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.tremolo)
+            return;
+        f.tremolo->setMix(f.tremBtn.getToggleState() ? 1.0F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.tremBtn);
+
+    makeParamSlider(fx.tremRateSlider, 0.5, 12.0, 5.0);
+    fx.tremRateSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.tremolo) {
+            f.tremolo->setRate(static_cast<float>(f.tremRateSlider.getValue()));
+        }
+    };
+
+    // Phaser (sweep rate)
+    fx.phaserBtn.setButtonText("PHS");
+    fx.phaserBtn.setClickingTogglesState(true);
+    fx.phaserBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.phaser)
+            return;
+        f.phaser->setMix(f.phaserBtn.getToggleState() ? 0.5F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.phaserBtn);
+
+    makeParamSlider(fx.phaserRateSlider, 0.05, 4.0, 0.5);
+    fx.phaserRateSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.phaser) {
+            f.phaser->setRate(static_cast<float>(f.phaserRateSlider.getValue()));
+        }
+    };
+
+    // Flanger (sweep rate)
+    fx.flangerBtn.setButtonText("FLG");
+    fx.flangerBtn.setClickingTogglesState(true);
+    fx.flangerBtn.onClick = [this, index] {
+        auto& f = fxPanels_[index];
+        if (!f.flanger)
+            return;
+        f.flanger->setMix(f.flangerBtn.getToggleState() ? 0.5F : 0.0F);
+    };
+    contentPane_.addAndMakeVisible(fx.flangerBtn);
+
+    makeParamSlider(fx.flangerRateSlider, 0.05, 4.0, 0.3);
+    fx.flangerRateSlider.onValueChange = [this, index] {
+        auto& f = fxPanels_[index];
+        if (f.flanger) {
+            f.flanger->setRate(static_cast<float>(f.flangerRateSlider.getValue()));
+        }
+    };
+}
+
+void MainComponent::setupEffects() {
+    if (effectsSetup_)
+        return;
+    effectsSetup_ = true;
+
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        auto* chain = engine_.effectsForTrack(i);
+        if (!chain)
+            continue;
+
+        // L'ordre d'ajout = ordre de traitement. On adopte une chaine « guitare »
+        // classique : gate -> distorsion -> wah -> modulations -> delay -> reverb.
+        // Tous les effets demarrent en bypass (mix=0 / gate desactivee).
+
+        auto gate = std::make_unique<voicelive::dsp::NoiseGate>();
+        gate->setEnabled(false);
+        gate->setThreshold(-45.0F);
+        gate->setAttack(5.0F);
+        gate->setRelease(120.0F);
+        fxPanels_[i].gate = gate.get();
+        chain->add(std::move(gate));
+
+        auto distortion = std::make_unique<voicelive::dsp::Distortion>();
+        distortion->setMix(0.0F);
+        distortion->setMode(voicelive::dsp::Distortion::Mode::SoftClip);
+        distortion->setDrive(8.0F);
+        distortion->setTone(0.5F);
+        distortion->setLevel(0.6F);
+        fxPanels_[i].distortion = distortion.get();
+        chain->add(std::move(distortion));
+
+        auto wah = std::make_unique<voicelive::dsp::Wah>();
+        wah->setMix(0.0F);
+        wah->setRate(1.5F);
+        wah->setMinFrequency(400.0F);
+        wah->setMaxFrequency(2000.0F);
+        wah->setResonance(4.0F);
+        fxPanels_[i].wah = wah.get();
+        chain->add(std::move(wah));
+
+        auto phaser = std::make_unique<voicelive::dsp::Phaser>();
+        phaser->setMix(0.0F);
+        phaser->setRate(0.5F);
+        phaser->setDepth(0.7F);
+        phaser->setFeedback(0.4F);
+        fxPanels_[i].phaser = phaser.get();
+        chain->add(std::move(phaser));
+
+        auto flanger = std::make_unique<voicelive::dsp::Flanger>();
+        flanger->setMix(0.0F);
+        flanger->setRate(0.3F);
+        flanger->setDepth(0.6F);
+        flanger->setFeedback(0.5F);
+        fxPanels_[i].flanger = flanger.get();
+        chain->add(std::move(flanger));
+
+        auto chorus = std::make_unique<voicelive::dsp::Chorus>();
+        chorus->setMix(0.0F);
+        chorus->setRate(1.5F);
+        chorus->setDepth(0.5F);
+        fxPanels_[i].chorus = chorus.get();
+        chain->add(std::move(chorus));
+
+        auto tremolo = std::make_unique<voicelive::dsp::Tremolo>();
+        tremolo->setMix(0.0F);
+        tremolo->setRate(5.0F);
+        tremolo->setDepth(0.7F);
+        fxPanels_[i].tremolo = tremolo.get();
+        chain->add(std::move(tremolo));
+
+        auto delay = std::make_unique<voicelive::dsp::Delay>();
+        delay->setMix(0.0F);
+        delay->setDelaySeconds(0.25F);
+        delay->setFeedback(0.4F);
+        fxPanels_[i].delay = delay.get();
+        chain->add(std::move(delay));
+
+        auto reverb = std::make_unique<voicelive::dsp::Reverb>();
+        reverb->setWet(0.0F);
+        reverb->setDry(1.0F);
+        reverb->setRoomSize(0.7F);
+        reverb->setDamping(0.5F);
+        fxPanels_[i].reverb = reverb.get();
+        chain->add(std::move(reverb));
     }
-    monoIn_.assign(blockSize, 0.0F);
-    monoOut_.assign(blockSize, 0.0F);
+}
+
+// ─── Audio ────────────────────────────────────────────────────────────────────
+
+void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate) {
+    try {
+        const auto blockSize = static_cast<std::size_t>(juce::jmax(1, samplesPerBlockExpected));
+        const auto rate = static_cast<unsigned>(juce::jmax(1.0, sampleRate));
+        const auto capacity = static_cast<std::size_t>(juce::jmax(1.0, sampleRate) * 30.0);
+
+        // Marge de securite : Oboe (Android) peut livrer des blocs plus grands que
+        // samplesPerBlockExpected. On dimensionne moteur et tampons avec une reserve
+        // pour que le callback n'abandonne jamais un bloc (sinon micro muet : ni
+        // enregistrement, ni spectre). getNextAudioBlock agrandit encore si besoin.
+        const std::size_t engineBlock = juce::jmax(blockSize, std::size_t{4096});
+
+        if (const auto sr = SampleRate::create(rate); sr.ok()) {
+            // Distinguer la PREMIERE preparation d'une simple reprise de peripherique
+            // (rebranchement casque USB-C). JUCE rappelle prepareToPlay a chaque
+            // changement de peripherique : refaire un prepare() complet effacerait
+            // toutes les pistes enregistrees (tracks_.clear()). Si le moteur est deja
+            // pret a la meme frequence, on ne re-dimensionne que les tampons de
+            // traitement (reconfigure), en conservant les boucles.
+            const bool alreadyPrepared = engine_.trackCount() == kTrackCount;
+            const bool sameRate = engine_.transport().sampleRate().hz() == rate;
+            if (alreadyPrepared && sameRate) {
+                static_cast<void>(engine_.reconfigure(sr.value(), engineBlock));
+                juce::Logger::writeToLog("VoiceLive: reprise peripherique " + juce::String(rate) +
+                                         " Hz (pistes conservees), bloc " +
+                                         juce::String(static_cast<int>(blockSize)));
+            } else {
+                static_cast<void>(engine_.prepare(sr.value(), kTrackCount, capacity, engineBlock));
+                setupEffects();
+                juce::Logger::writeToLog("VoiceLive: audio pret " + juce::String(rate) +
+                                         " Hz, bloc " + juce::String(static_cast<int>(blockSize)));
+            }
+            sampleRate_ = sampleRate;
+        } else {
+            juce::Logger::writeToLog("VoiceLive: ERREUR frequence " + juce::String(rate));
+        }
+        monoIn_.assign(engineBlock, 0.0F);
+        monoOut_.assign(engineBlock, 0.0F);
+        mixTmpBuf_.setSize(1, static_cast<int>(engineBlock), false, true, false);
+        // Reconnecter la source mix si un rendu existait avant la reprise
+        // (JUCE appelle releaseResources + prepareToPlay lors d'un changement de
+        // peripherique, ex. branchement USB-C, ce qui deconnecte setSource(nullptr)).
+        if (mixMemorySource_ != nullptr) {
+            mixTransport_.setSource(mixMemorySource_.get(), 0, nullptr, sampleRate, 1);
+            juce::Logger::writeToLog("Mix transport reconnecte apres reprise peripherique");
+        }
+        mixTransport_.prepareToPlay(static_cast<int>(engineBlock), sampleRate);
+    } catch (const std::exception& e) {
+        juce::Logger::writeToLog(juce::String("ERREUR prepareToPlay: ") + e.what());
+    } catch (...) {
+        juce::Logger::writeToLog("ERREUR inconnue dans prepareToPlay");
+    }
 }
 
 void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& bufferToFill) {
+    if (bufferToFill.buffer == nullptr) {
+        return;
+    }
     juce::AudioBuffer<float>* buffer = bufferToFill.buffer;
     const auto numSamples = static_cast<std::size_t>(bufferToFill.numSamples);
-    if (numSamples > monoIn_.size()) {
-        bufferToFill.clearActiveBufferRegion();
+    if (numSamples == 0) {
         return;
+    }
+    // Filet de securite : si le bloc depasse la taille preparee (renegociation
+    // Oboe sur Android), on agrandit les tampons plutot que d'abandonner le bloc.
+    // Sans cela, le micro restait muet (ni enregistrement, ni spectre).
+    if (numSamples > monoIn_.size()) {
+        monoIn_.assign(numSamples, 0.0F);
+        monoOut_.assign(numSamples, 0.0F);
+        if (mixTmpBuf_.getNumSamples() < static_cast<int>(numSamples)) {
+            mixTmpBuf_.setSize(1, static_cast<int>(numSamples), false, true, false);
+        }
     }
 
     const int numChannels = juce::jmin(buffer->getNumChannels(), kMaxChannels);
@@ -249,8 +1147,21 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     const std::span<float> monoOut{monoOut_.data(), numSamples};
     channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
 
-    // Alimente la fenêtre d'analyse de l'accordeur (course bénigne avec le Timer).
-    if (numSamples < analysis_.size()) {
+    // Diagnostic bon marche : crete d'entree + taille de bloc, pour confirmer sur
+    // l'appareil que le micro capture bien (niveau > 0 pendant l'enregistrement).
+    float inPeak = 0.0F;
+    for (const float s : monoIn) {
+        inPeak = std::max(inPeak, std::abs(s));
+    }
+    inputLevel_.store(inPeak, std::memory_order_relaxed);
+    lastBlockSize_.store(static_cast<int>(numSamples), std::memory_order_relaxed);
+
+    // Alimente la fenetre d'analyse glissante (accordeur + spectre). On gere aussi
+    // le cas d'un bloc >= a la fenetre : on ne garde que les derniers echantillons.
+    if (numSamples >= analysis_.size()) {
+        std::copy(monoIn_.begin() + static_cast<std::ptrdiff_t>(numSamples - analysis_.size()),
+                  monoIn_.begin() + static_cast<std::ptrdiff_t>(numSamples), analysis_.begin());
+    } else {
         const std::size_t keep = analysis_.size() - numSamples;
         std::copy(analysis_.begin() + static_cast<std::ptrdiff_t>(numSamples), analysis_.end(),
                   analysis_.begin());
@@ -259,27 +1170,219 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
     }
 
     engine_.process(monoOut, monoIn);
+
+    // Lecture de la piste mix pre-rendue (AudioTransportSource gere la thread-safety)
+    if (mixTransport_.isPlaying() && mixTmpBuf_.getNumSamples() >= static_cast<int>(numSamples)) {
+        mixTmpBuf_.clear(0, 0, static_cast<int>(numSamples));
+        juce::AudioSourceChannelInfo mixInfo(&mixTmpBuf_, 0, static_cast<int>(numSamples));
+        mixTransport_.getNextAudioBlock(mixInfo);
+        const float* mixOut = mixTmpBuf_.getReadPointer(0);
+        for (std::size_t s = 0; s < numSamples; ++s)
+            monoOut[s] = juce::jlimit(-1.0F, 1.0F, monoOut[s] + mixOut[s]);
+    }
+
+    // Anti-larsen : couper le haut-parleur pendant l'enregistrement SAUF si un
+    // casque est detecte (casque = pas de reinjection micro, monitoring OK).
+    if (anyTrackRecording_.load(std::memory_order_acquire) && !headphoneMonitor_.isConnected()) {
+        std::fill(monoOut.begin(), monoOut.end(), 0.0F);
+    }
+
     channels::spreadToChannels(outputPtrs.data(), static_cast<std::size_t>(numChannels), monoOut);
 }
 
-void MainComponent::releaseResources() {}
+void MainComponent::releaseResources() {
+    mixTransport_.stop();
+    mixTransport_.setSource(nullptr);
+    mixTransport_.releaseResources();
+}
+
+// ─── ChangeListener (hotplug USB-C / routage audio) ──────────────────────────
+
+void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source) {
+    // Sert uniquement au journal : HeadphoneMonitor gere deja la detection casque.
+    // On n'appelle PAS restartLastAudioDevice() ici car engine_.prepare() efface
+    // toutes les pistes enregistrees. JUCE/Oboe gere lui-meme le reroutage audio.
+    if (dynamic_cast<juce::AudioDeviceManager*>(source) != nullptr) {
+        juce::Logger::writeToLog("Changement peripherique audio (USB-C / BT ?)");
+        refreshDeviceList();  // un hotplug peut ajouter/retirer une entree de la liste
+    }
+}
+
+// ─── Timer ────────────────────────────────────────────────────────────────────
 
 void MainComponent::timerCallback() {
-    if (analysis_.empty()) {
+    if (analysis_.empty())
         return;
-    }
-    const auto note = engine_.tune(std::span<const float>{analysis_.data(), analysis_.size()});
-    if (!note.has_value()) {
-        tunerLabel_.setText("Accordeur : —", juce::dontSendNotification);
-        return;
-    }
-    const int cents = juce::roundToInt(note->cents);
-    const juce::String text = juce::String("Accordeur : ") + music::name(note->midi) +
-                              juce::String(music::octave(note->midi)) + "   " +
-                              (cents >= 0 ? "+" : "") + juce::String(cents) + " cents";
-    tunerLabel_.setText(text, juce::dontSendNotification);
 
-    updateDiagnostics();
+    ++timerTickCount_;
+
+    // ── Watchdog audio (recuperation apres reroutage USB-C ou echec de demarrage)
+    // Deux situations :
+    //   1) Audio vivant puis fige : Oboe n'a pas su rouvrir le flux apres un
+    //      branchement/debranchement de casque USB-C en mode Exclusive.
+    //   2) Echec au demarrage : Oboe a echoue lors de l'ouverture initiale
+    //      (jassert juce_Oboe_android.cpp:236), prepareToPlay() n'a jamais ete
+    //      appele, le moteur est vide (0 pistes). Le casque etait branche avant
+    //      le lancement de l'application. On retente l'ouverture apres 2 s.
+    // Dans les deux cas la relance est SURE en mode Shared (android.yml) : pas de
+    // blocage sur le spinlock exclusif d'Oboe. prepareToPlay() appelle reconfigure()
+    // quand le moteur est deja pret a la meme frequence, preservant les pistes.
+    {
+        const std::uint64_t blocks = engine_.diagnostics().blocksProcessed;
+        if (blocks != lastSeenBlocks_) {
+            lastSeenBlocks_ = blocks;
+            audioStaleTicks_ = 0;
+            audioWasAlive_ = true;
+        } else {
+            ++audioStaleTicks_;
+        }
+        if (restartCooldownTicks_ > 0) {
+            --restartCooldownTicks_;
+        }
+        const bool deviceRunning = deviceManager.getCurrentAudioDevice() != nullptr;
+        const bool engineReady = engine_.trackCount() == kTrackCount;
+
+        // Cas 1 : audio vivant puis fige (2 s sans bloc).
+        if (audioWasAlive_ && deviceRunning && isShowing() && audioStaleTicks_ >= 20 &&
+            restartCooldownTicks_ == 0) {
+            juce::Logger::writeToLog(
+                "Watchdog: audio fige (2s sans bloc), relance du peripherique");
+            if (anyTrackRecording_.load(std::memory_order_acquire)) {
+                for (std::size_t i = 0; i < kTrackCount; ++i) {
+                    if (const auto* p = engine_.track(i);
+                        p != nullptr && p->track().state() == TrackState::Recording) {
+                        postCommand(EngineCommand::Action::FinishRecording, i, 1.0F, false);
+                    }
+                }
+                anyTrackRecording_.store(false, std::memory_order_release);
+            }
+            audioStaleTicks_ = 0;
+            restartCooldownTicks_ = 50;
+            deviceManager.restartLastAudioDevice();
+        }
+
+        // Cas 2 : echec du demarrage initial (moteur non initialise apres 2 s).
+        // restartLastAudioDevice() est INUTILISABLE ici : elle lit
+        // lastDeviceTypeConfigs (AudioDeviceManager.cpp:906) qui est vide quand
+        // aucun peripherique n'a jamais ete ouvert avec succes → jassertfalse en
+        // boucle. On utilise setAudioChannels() qui re-enumere tous les
+        // peripheriques depuis zero et peut ouvrir un flux sur le bon appareil.
+        // Limite a kMaxStartupAttempts pour eviter le spam d'assertions.
+        if (!audioWasAlive_ && !engineReady && isShowing() && audioStaleTicks_ >= 20 &&
+            restartCooldownTicks_ == 0) {
+            ++watchdogStartupAttempts_;
+            constexpr int kMaxStartupAttempts = 3;
+            if (watchdogStartupAttempts_ <= kMaxStartupAttempts) {
+                juce::Logger::writeToLog("Watchdog: demarrage audio echoue, tentative " +
+                                         juce::String(watchdogStartupAttempts_) + "/" +
+                                         juce::String(kMaxStartupAttempts));
+                audioStaleTicks_ = 0;
+                restartCooldownTicks_ = 50;
+                setAudioChannels(2, 2);
+            } else if (watchdogStartupAttempts_ == kMaxStartupAttempts + 1) {
+                juce::Logger::writeToLog(
+                    "ERREUR AUDIO : peripherique inaccessible apres " +
+                    juce::String(kMaxStartupAttempts) +
+                    " tentatives. Casque USB-C branche au lancement ? "
+                    "=> Deconnectez-le, relancez l'app, rebranchez le casque.");
+            }
+        }
+    }
+    // ──────────────────────────────────────────────────────────────────────────
+
+    // On Android, scanAndroidOutputs() costs ~15 JNI bridge crossings per call.
+    // Rate-limit to 1 Hz (every 10th tick) — fast enough for headphone hotplug.
+    // Between polls, headphoneLed_ still reads the cached atomic value.
+    if (timerTickCount_ % 10 == 0) {
+        headphoneMonitor_.poll(deviceManager);
+    }
+    // La re-enumeration complete des peripheriques (scanForDevices -> JNI) ne sert
+    // qu'a rafraichir le selecteur : inutile a 1 Hz. On la limite a ~0,33 Hz pour
+    // alleger le thread message. Un hotplug reel declenche deja refreshDeviceList()
+    // via changeListenerCallback ; ce balayage periodique n'est qu'un filet pour les
+    // branchements qu'Android ne notifie pas toujours.
+    if (timerTickCount_ % 30 == 0) {
+        refreshDeviceList();
+    }
+    headphoneLed_.setConnected(headphoneMonitor_.isConnected());
+
+    checkPendingEdit();
+
+    if (tunerActiveButton_.getToggleState()) {
+        const auto note = engine_.tune(std::span<const float>{analysis_.data(), analysis_.size()});
+        if (!note.has_value()) {
+            tunerLabel_.setText("Accordeur : ---", juce::dontSendNotification);
+        } else {
+            const int cents = juce::roundToInt(note->cents);
+            const juce::String text = juce::String("Accordeur : ") + music::name(note->midi) +
+                                      juce::String(music::octave(note->midi)) + "   " +
+                                      (cents >= 0 ? "+" : "") + juce::String(cents) + " cents";
+            tunerLabel_.setText(text, juce::dontSendNotification);
+        }
+    }
+
+    spectrumView_.update(std::span<const float>{analysis_.data(), analysis_.size()});
+
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            waveforms_[i].setAudio(&proc->audio());
+            const std::size_t len = proc->audio().loopLength();
+            const auto state = proc->track().state();
+            const bool isRecording = (state == TrackState::Recording);
+            const bool isActive =
+                (state == TrackState::Playing || state == TrackState::Overdubbing || isRecording);
+            if (isActive) {
+                // Repaint a chaque tick pour animer la tete de lecture. En
+                // enregistrement, la tete suit la fin du contenu capture (len),
+                // ce qui donne un retour visuel immediat que le micro tourne.
+                const std::size_t ph = isRecording ? len : proc->playhead();
+                waveforms_[i].setPlayhead(ph, len > 0 ? len : 1, sampleRate_);
+                waveforms_[i].repaint();
+            } else {
+                if (len != lastWaveformLength_[i]) {
+                    // Clear playhead and refresh on state/length change
+                    waveforms_[i].setPlayhead(0, 0, sampleRate_);
+                    waveforms_[i].repaint();
+                }
+            }
+            lastWaveformLength_[i] = len;
+        }
+    }
+
+    // Mix player : tete de lecture + etiquette de temps + activation des boutons
+    {
+        const double mixLenSec = mixTransport_.getLengthInSeconds();
+        const double mixPosSec = mixTransport_.getCurrentPosition();
+        if (mixLenSec > 0.0) {
+            const int posM = static_cast<int>(mixPosSec) / 60;
+            const int posS = static_cast<int>(mixPosSec) % 60;
+            const int posTenth = static_cast<int>(mixPosSec * 10.0) % 10;
+            const int lenM = static_cast<int>(mixLenSec) / 60;
+            const int lenS = static_cast<int>(mixLenSec) % 60;
+            mixTimeLabel_.setText(juce::String(posM) + ":" + (posS < 10 ? "0" : "") +
+                                      juce::String(posS) + "." + juce::String(posTenth) + " / " +
+                                      juce::String(lenM) + ":" + (lenS < 10 ? "0" : "") +
+                                      juce::String(lenS),
+                                  juce::dontSendNotification);
+
+            const std::size_t totalPcm = static_cast<std::size_t>(mixLenSec * sampleRate_);
+            const std::size_t posPcm = static_cast<std::size_t>(mixPosSec * sampleRate_);
+            mixWaveform_.setPlayhead(posPcm, totalPcm > 0 ? totalPcm : 1, sampleRate_);
+            if (mixTransport_.isPlaying() || posPcm != lastMixWavePos_) {
+                lastMixWavePos_ = posPcm;
+                mixWaveform_.repaint();
+            }
+        }
+        mixPlayBtn_.setEnabled(mixLenSec > 0.0 && !mixTransport_.isPlaying());
+        mixPauseBtn_.setEnabled(mixTransport_.isPlaying());
+        mixStopBtn_.setEnabled(mixLenSec > 0.0);
+    }
+
+    // diagView_.setText() triggers full text re-layout on every call. Rate-limit
+    // to 2 Hz (every 5th tick) — the diagnostic view does not need 10 Hz updates.
+    if (timerTickCount_ % 5 == 0) {
+        updateDiagnostics();
+    }
 }
 
 void MainComponent::updateDiagnostics() {
@@ -287,84 +1390,537 @@ void MainComponent::updateDiagnostics() {
     text << "VoiceLive Pro v2.0.0  |  JUCE " << juce::SystemStats::getJUCEVersion() << "\n";
     text << "Build : " << __DATE__ << " " << __TIME__ << "\n";
 
+    const bool headphones = headphoneMonitor_.isConnected();
+    text << "Casque : "
+         << (headphones ? "DETECTE (monitoring actif)" : "NON detecte (speaker coupe pendant rec)")
+         << "\n";
+    text << headphoneMonitor_.diagnostic() << "\n";
+
+    if (anyTrackRecording_.load(std::memory_order_relaxed)) {
+        if (headphones) {
+            text << "[REC EN COURS] Monitoring casque actif\n";
+        } else {
+            text << "[REC EN COURS] Speaker coupe - brancher un casque USB-C pour le retour\n";
+        }
+    }
+    if (pendingEdit_) {
+        text << "[EDIT EN ATTENTE] piste " << static_cast<int>(pendingEdit_->trackIndex + 1)
+             << "\n";
+    }
+
     if (auto* device = deviceManager.getCurrentAudioDevice(); device != nullptr) {
         text << "Audio : " << device->getName() << "  "
              << juce::String(device->getCurrentSampleRate(), 0) << " Hz / buffer "
              << device->getCurrentBufferSizeSamples() << "\n";
+        text << "Entrees actives : " << device->getActiveInputChannels().toString(2)
+             << "  bloc callback " << lastBlockSize_.load(std::memory_order_relaxed) << " ech\n";
     } else {
-        text << "Audio : NON DÉMARRÉ (vérifier les permissions micro)\n";
+        text << "Audio : NON DEMARRE (verifier les permissions micro)\n";
     }
+
+    // Niveau d'entree micro : si ce niveau reste ~0 pendant l'enregistrement, le
+    // micro ne capte rien (permission refusee ou peripherique en sortie seule).
+    const float micLevel = inputLevel_.load(std::memory_order_relaxed);
+    text << "Micro (crete) : " << juce::String(micLevel, 4)
+         << (micLevel < 1e-4F ? "  [SILENCE - micro inactif ?]" : "  [signal OK]") << "\n";
 
     const auto diag = engine_.diagnostics();
     text << "Moteur : " << static_cast<int>(diag.trackCount) << " pistes, "
          << static_cast<int>(diag.blocksProcessed) << " blocs, "
-         << static_cast<int>(diag.droppedCommands) << " cmd perdues, métronome "
+         << static_cast<int>(diag.droppedCommands) << " cmd perdues, metronome "
          << (diag.metronomeEnabled ? "ON" : "OFF") << ", master FX "
          << static_cast<int>(diag.masterEffectCount) << "\n";
 
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
+    text << "Dossier exports : " << dir.getFullPathName() << "\n";
+
     for (std::size_t i = 0; i < diag.trackCount; ++i) {
         const auto* processor = engine_.track(i);
-        if (processor == nullptr) {
+        if (processor == nullptr)
             continue;
-        }
         const auto& track = processor->track();
+        const auto& audio = processor->audio();
+        const std::size_t loopLen = audio.loopLength();
+        const std::size_t head = processor->playhead();
+        const double sr = sampleRate_ > 0.0 ? sampleRate_ : 48000.0;
         text << "  Piste " << static_cast<int>(i) + 1 << " : "
              << voicelive::core::toString(track.state()) << "  gain "
              << juce::String(track.gain().linear(), 2) << (track.isMuted() ? "  [MUTE]" : "")
-             << "\n";
+             << "  boucle " << juce::String(static_cast<double>(loopLen) / sr, 1) << "s  tete "
+             << juce::String(static_cast<double>(head) / sr, 1) << "s\n";
     }
 
-    text << "\n--- Journal (récent) ---\n" << appLogger_.snapshot();
+    text << "\n--- Journal (recent) ---\n" << appLogger_.snapshot();
     diagView_.setText(text, false);
+    // Ajuster la hauteur de diagView_ au contenu reel pour que l'auto-defilement
+    // tombe sur la derniere ligne de texte et non sur de l'espace vide.
+    // getTextHeight() est valide immediatement apres setText() (layout synchrone).
+    {
+        const int textH = static_cast<int>(diagView_.getTextHeight());
+        const int contentH = juce::jmax(logViewport_.getViewHeight(), textH + 8);
+        if (diagView_.getHeight() != contentH) {
+            diagView_.setSize(diagView_.getWidth(), contentH);
+        }
+        logViewport_.setViewPosition(0, juce::jmax(0, textH - logViewport_.getViewHeight() + 8));
+    }
 }
+
+void MainComponent::refreshDeviceList() {
+    auto* type = deviceManager.getCurrentDeviceTypeObject();
+    if (type == nullptr) {
+        return;
+    }
+
+    // Re-enumere la liste physique (necessaire au hotplug USB-C). En amont
+    // OboeAudioIODeviceType::scanForDevices() est vide ; android.yml le patche pour
+    // qu'il rebatisse la liste. Sur desktop / sans patch c'est un no-op inoffensif.
+    type->scanForDevices();
+
+    const auto setup = deviceManager.getAudioDeviceSetup();
+
+    // Remplit une ComboBox sans casser une selection en cours ni declencher onChange.
+    const auto fill = [](juce::ComboBox& box, const juce::StringArray& names,
+                         const juce::String& current) {
+        if (box.isPopupActive()) {
+            return;  // l'utilisateur est en train de choisir : ne pas reconstruire
+        }
+        const juce::String wanted =
+            current.isNotEmpty() ? current : (names.isEmpty() ? juce::String() : names[0]);
+
+        juce::StringArray existing;
+        for (int i = 0; i < box.getNumItems(); ++i) {
+            existing.add(box.getItemText(i));
+        }
+        if (existing == names && box.getText() == wanted) {
+            return;  // deja a jour : on evite de reinitialiser la selection
+        }
+
+        box.clear(juce::dontSendNotification);
+        for (int i = 0; i < names.size(); ++i) {
+            box.addItem(names[i], i + 1);  // les noms JUCE ne sont jamais vides
+        }
+        if (!names.isEmpty()) {
+            const int idx = names.indexOf(wanted);
+            box.setSelectedId(idx >= 0 ? idx + 1 : 1, juce::dontSendNotification);
+        }
+    };
+
+    fill(outputDeviceBox_, type->getDeviceNames(false), setup.outputDeviceName);
+    fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
+}
+
+void MainComponent::applyDeviceSelection() {
+    if (deviceManager.getCurrentDeviceTypeObject() == nullptr) {
+        return;
+    }
+
+    auto setup = deviceManager.getAudioDeviceSetup();
+    const juce::String outName = outputDeviceBox_.getText();
+    const juce::String inName = inputDeviceBox_.getText();
+
+    // Pas de changement reel : on sort (evite la reentrance via changeListenerCallback
+    // -> refreshDeviceList qui pourrait re-declencher onChange).
+    if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
+        return;
+    }
+
+    setup.outputDeviceName = outName;
+    setup.inputDeviceName = inName;
+    // On laisse Oboe renegocier debit/buffer (sinon forcer une taille peut rouvrir
+    // le peripherique en sortie seule -> perte du micro, cf. note de setAudioChannels).
+    setup.sampleRate = 0;
+    setup.bufferSize = 0;
+    setup.useDefaultInputChannels = true;
+    setup.useDefaultOutputChannels = true;
+
+    const auto err = deviceManager.setAudioDeviceSetup(setup, true);
+    if (err.isNotEmpty()) {
+        juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err + "'");
+    } else {
+        juce::Logger::writeToLog("Peripherique audio -> sortie='" + outName + "' entree='" +
+                                 inName + "'");
+    }
+}
+
+// ─── Transport global ─────────────────────────────────────────────────────────
+
+void MainComponent::playAllTracks() {
+    // Strategie : arreter d'abord toutes les pistes actives, puis relancer tout.
+    // Toutes les commandes sont envoyees avant le prochain bloc audio -> elles
+    // sont toutes traitees dans le meme while(commands_.pop()) -> demarrage
+    // synchronise a la precision d'un bloc (~5 ms a 48 kHz / 256 samples).
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            const auto state = proc->track().state();
+            if (state == TrackState::Playing || state == TrackState::Overdubbing) {
+                postCommand(EngineCommand::Action::Stop, i, 1.0F, false);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            if (proc->track().hasContent() && proc->track().state() != TrackState::Recording) {
+                postCommand(EngineCommand::Action::Play, i, 1.0F, false);
+            }
+        }
+    }
+    juce::Logger::writeToLog("Transport global : Play toutes depuis le debut");
+}
+
+void MainComponent::pauseAllTracks() {
+    // Stop les pistes en lecture sans remettre le playhead a zero.
+    // (TrackProcessor::stop() ne touche pas playhead_, contrairement a play().)
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            const auto state = proc->track().state();
+            if (state == TrackState::Playing || state == TrackState::Overdubbing) {
+                postCommand(EngineCommand::Action::Stop, i, 1.0F, false);
+            }
+        }
+    }
+    juce::Logger::writeToLog("Transport global : Pause");
+}
+
+void MainComponent::stopAllTracks() {
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            const auto state = proc->track().state();
+            if (state == TrackState::Playing || state == TrackState::Overdubbing ||
+                state == TrackState::Stopped) {
+                postCommand(EngineCommand::Action::Stop, i, 1.0F, false);
+            }
+        }
+    }
+    juce::Logger::writeToLog("Transport global : Stop toutes");
+}
+
+void MainComponent::paint(juce::Graphics& g) {
+    g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
+}
+
+// ─── Layout ───────────────────────────────────────────────────────────────────
 
 void MainComponent::resized() {
-    auto area = getLocalBounds().reduced(12);
-    diagView_.setBounds(area.removeFromBottom(130));  // panneau Diag en bas
-    copyButton_.setBounds(area.removeFromBottom(34).reduced(2));
-    area.removeFromBottom(8);
-    titleLabel_.setBounds(area.removeFromTop(32));
-    tunerLabel_.setBounds(area.removeFromTop(28));
-    area.removeFromTop(8);
+    viewport_.setBounds(getLocalBounds());
 
-    for (TrackStrip& strip : strips_) {
-        auto row = area.removeFromTop(46);
-        strip.label.setBounds(row.removeFromLeft(70));
-        strip.recordButton.setBounds(row.removeFromLeft(58).reduced(2));
-        strip.playButton.setBounds(row.removeFromLeft(58).reduced(2));
-        strip.stopButton.setBounds(row.removeFromLeft(58).reduced(2));
-        strip.clearButton.setBounds(row.removeFromLeft(58).reduced(2));
-        strip.muteButton.setBounds(row.removeFromRight(70));
-        strip.gainSlider.setBounds(row.reduced(4));
-        area.removeFromTop(6);
+    const int usableW = juce::jmax(300, viewport_.getMaximumVisibleWidth());
+    const int pad = 12;
+
+    constexpr int kTitleH = 34;
+    constexpr int kTunerH = 34;
+    constexpr int kGlobalTransH = 44;  // rangee transport global [▶ Toutes][⏸][⏹]
+    constexpr int kRowH = 44;
+    constexpr int kWaveH = 60;
+    constexpr int kFxRowH = 40;
+    constexpr int kEditRowH = 36;
+    constexpr int kTransH = 48;
+    constexpr int kEqLblH = 26;
+    constexpr int kEqRowH = 44;
+    constexpr int kSpecH = 90;
+    constexpr int kMixLblH = 26;
+    constexpr int kMixWaveH = 60;
+    constexpr int kMixEditH = 36;
+    constexpr int kAudioLblH = 26;
+    constexpr int kAudioRowH = 40;
+    constexpr int kIoLblH = 26;
+    constexpr int kIoRowH = 44;
+    constexpr int kCopyH = 40;
+    constexpr int kDiagH = 200;
+    constexpr int kGap = 10;
+
+    // Hauteur d'un bloc piste : 2 rangees de controles + waveform + 5 rangees FX + rangee edition
+    constexpr int kFxRows = 5;
+    constexpr int kTrackH = kRowH + 6 + kRowH + 4 + kWaveH + 4 + (kFxRowH * kFxRows) + kEditRowH;
+
+    const int trackCount = static_cast<int>(kTrackCount);
+    const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap / 2 + kGlobalTransH + kGap +
+                       trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
+                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
+                       kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
+                       kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 +
+                       kDiagH + pad;
+
+    contentPane_.setSize(usableW, totalH);
+    auto area = contentPane_.getLocalBounds().reduced(pad);
+
+    // Titre : [label] [LED casque 26px]
+    {
+        auto row = area.removeFromTop(kTitleH);
+        headphoneLed_.setBounds(row.removeFromRight(26).reduced(3));
+        titleLabel_.setBounds(row);
+    }
+    area.removeFromTop(kGap / 2);
+
+    // Accordeur : [toggle] [label]
+    {
+        auto row = area.removeFromTop(kTunerH);
+        tunerActiveButton_.setBounds(row.removeFromLeft(110).reduced(2));
+        tunerLabel_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(kGap / 2);
+
+    // Transport global : [▶ Toutes] [⏸ Pause] [⏹ Stop]
+    {
+        auto row = area.removeFromTop(kGlobalTransH);
+        const int third = row.getWidth() / 3;
+        globalPlayBtn_.setBounds(row.removeFromLeft(third).reduced(2));
+        globalPauseBtn_.setBounds(row.removeFromLeft(third).reduced(2));
+        globalStopBtn_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(kGap);
+
+    // Pistes
+    const int w = area.getWidth();
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        auto trackArea = area.removeFromTop(kTrackH);
+
+        // Rangee 1 : label + boutons transport
+        auto row1 = trackArea.removeFromTop(kRowH);
+        const int labelW = 56;
+        const int btnW = juce::jmax(42, (w - labelW) / 4);
+        strips_[i].label.setBounds(row1.removeFromLeft(labelW));
+        strips_[i].recordButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
+        strips_[i].playButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
+        strips_[i].stopButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
+        strips_[i].clearButton.setBounds(row1.removeFromLeft(btnW).reduced(2));
+
+        trackArea.removeFromTop(6);
+
+        // Rangee 2 : gain + [MIX] [Mute]
+        auto row2 = trackArea.removeFromTop(kRowH);
+        strips_[i].muteButton.setBounds(row2.removeFromRight(64).reduced(2));
+        includeBtns_[i].setBounds(row2.removeFromRight(56).reduced(2));
+        strips_[i].gainSlider.setBounds(row2.reduced(2));
+
+        trackArea.removeFromTop(4);
+
+        // Waveform (avec selection interactive) + boutons zoom [+][-] superposes
+        {
+            const auto waveArea = trackArea.removeFromTop(kWaveH);
+            waveforms_[i].setBounds(waveArea);
+            // Boutons superposes en haut a droite : [−][+], 28 x 20 px chacun.
+            constexpr int kZW = 28;
+            constexpr int kZH = 20;
+            zoomInBtns_[i].setBounds(waveArea.getRight() - kZW, waveArea.getY(), kZW, kZH);
+            zoomOutBtns_[i].setBounds(waveArea.getRight() - kZW * 2 - 2, waveArea.getY(), kZW, kZH);
+        }
+
+        trackArea.removeFromTop(4);
+
+        // FX Rangee 1 : [REV | wet] | [DLY | time]
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].reverbBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].reverbWetSlider.setBounds(left.reduced(2));
+            fxPanels_[i].delayBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].delayTimeSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // FX Rangee 2 : [WAH | rate] | [CHR | depth]
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].wahBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].wahRateSlider.setBounds(left.reduced(2));
+            fxPanels_[i].chorusBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].chorusDepthSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // FX Rangee 3 : [DST | drive] | [GATE | seuil]
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].distBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].distDriveSlider.setBounds(left.reduced(2));
+            fxPanels_[i].gateBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].gateThreshSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // FX Rangee 4 : [TRM | rate] | [PHS | rate]
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].tremBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].tremRateSlider.setBounds(left.reduced(2));
+            fxPanels_[i].phaserBtn.setBounds(fxRow.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].phaserRateSlider.setBounds(fxRow.reduced(2));
+        }
+
+        // FX Rangee 5 : [FLG | rate] | (libre)
+        {
+            auto fxRow = trackArea.removeFromTop(kFxRowH);
+            const int halfW = fxRow.getWidth() / 2;
+            const int fxBtnW = 52;
+            auto left = fxRow.removeFromLeft(halfW);
+            fxPanels_[i].flangerBtn.setBounds(left.removeFromLeft(fxBtnW).reduced(2));
+            fxPanels_[i].flangerRateSlider.setBounds(left.reduced(2));
+        }
+
+        // Rangee edition : [Cut Sel] [Trim Sel] [Export N] [BPM]
+        {
+            auto editRow = trackArea.removeFromTop(kEditRowH);
+            const int quarter = editRow.getWidth() / 4;
+            cutBtns_[i].setBounds(editRow.removeFromLeft(quarter).reduced(2));
+            trimBtns_[i].setBounds(editRow.removeFromLeft(quarter).reduced(2));
+            exportTrackBtns_[i].setBounds(editRow.removeFromLeft(quarter).reduced(2));
+            bpmSyncBtns_[i].setBounds(editRow.reduced(2));
+        }
+
+        area.removeFromTop(kGap / 2);
     }
 
-    area.removeFromTop(8);
-    auto transportRow = area.removeFromTop(46);
-    transportLabel_.setBounds(transportRow.removeFromLeft(90));
-    metronomeButton_.setBounds(transportRow.removeFromLeft(110));
-    bpmSlider_.setBounds(transportRow.reduced(4));
+    // Transport
+    area.removeFromTop(kGap);
+    {
+        auto row = area.removeFromTop(kTransH);
+        metronomeButton_.setBounds(row.removeFromLeft(120).reduced(2));
+        bpmSlider_.setBounds(row.reduced(4));
+    }
 
-    area.removeFromTop(8);
-    masterLabel_.setBounds(area.removeFromTop(24));
-    auto eqRow = area;
-    const int third = juce::jmax(1, eqRow.getWidth() / 3);
-    lowEqSlider_.setBounds(eqRow.removeFromLeft(third).reduced(8));
-    midEqSlider_.setBounds(eqRow.removeFromLeft(third).reduced(8));
-    highEqSlider_.setBounds(eqRow.reduced(8));
+    // EQ master
+    area.removeFromTop(kGap);
+    masterLabel_.setBounds(area.removeFromTop(kEqLblH));
+    area.removeFromTop(4);
+    const int eqLabelW = 68;
+    const std::pair<juce::Slider*, juce::Label*> eqRows[3] = {
+        {&lowEqSlider_, &lowEqLabel_},
+        {&midEqSlider_, &midEqLabel_},
+        {&highEqSlider_, &highEqLabel_},
+    };
+    for (auto [slider, label] : eqRows) {
+        auto row = area.removeFromTop(kEqRowH);
+        label->setBounds(row.removeFromLeft(eqLabelW));
+        slider->setBounds(row.reduced(2));
+        area.removeFromTop(4);
+    }
+
+    // Spectre temps-reel
+    area.removeFromTop(kGap);
+    spectrumView_.setBounds(area.removeFromTop(kSpecH));
+
+    // Mix Master section : [label] [Render Mix] / [Play][Pause][Stop][time] / [waveform] / edits
+    area.removeFromTop(kGap);
+    {
+        auto row = area.removeFromTop(kMixLblH);
+        mixLabel_.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(2));
+        renderMixBtn_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kEditRowH);
+        constexpr int kPlayerBtnW = 64;
+        mixPlayBtn_.setBounds(row.removeFromLeft(kPlayerBtnW).reduced(2));
+        mixPauseBtn_.setBounds(row.removeFromLeft(kPlayerBtnW).reduced(2));
+        mixStopBtn_.setBounds(row.removeFromLeft(kPlayerBtnW).reduced(2));
+        mixTimeLabel_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    mixWaveform_.setBounds(area.removeFromTop(kMixWaveH));
+    area.removeFromTop(4);
+    {
+        auto editRow = area.removeFromTop(kMixEditH);
+        const int third = editRow.getWidth() / 3;
+        cutMixBtn_.setBounds(editRow.removeFromLeft(third).reduced(2));
+        trimMixBtn_.setBounds(editRow.removeFromLeft(third).reduced(2));
+        exportMixBtn_.setBounds(editRow.reduced(2));
+    }
+
+    // Peripheriques audio section : [label] / [Sortie | combo] / [Entree | combo]
+    area.removeFromTop(kGap);
+    audioDevLabel_.setBounds(area.removeFromTop(kAudioLblH));
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kAudioRowH);
+        outputDevLabel_.setBounds(row.removeFromLeft(70));
+        outputDeviceBox_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kAudioRowH);
+        inputDevLabel_.setBounds(row.removeFromLeft(70));
+        inputDeviceBox_.setBounds(row.reduced(2));
+    }
+
+    // Projet section
+    area.removeFromTop(kGap);
+    ioLabel_.setBounds(area.removeFromTop(kIoLblH));
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kIoRowH);
+        saveProjectBtn_.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(2));
+        loadProjectBtn_.setBounds(row.reduced(2));
+    }
+
+    // Diagnostic
+    area.removeFromTop(kGap);
+    copyButton_.setBounds(area.removeFromTop(kCopyH).reduced(2));
+    area.removeFromTop(kGap / 2);
+    {
+        const auto logBounds = area.removeFromTop(kDiagH);
+        logViewport_.setBounds(logBounds);
+        // Le contenu du TextEditor est plus haut que la fenetre visible : on lui
+        // donne la largeur sans la barre de defilement et une hauteur fixe couvrant
+        // ~200 lignes (appLogger_ est plafonne a 200 lignes x ~16 px = 3200 px).
+        const int logW = juce::jmax(10, logViewport_.getMaximumVisibleWidth());
+        // Hauteur initiale = viewport ; sera ajustee dynamiquement par updateDiagnostics().
+        diagView_.setSize(logW, juce::jmax(logViewport_.getHeight(), diagView_.getHeight()));
+    }
 }
 
+// ─── Controle des pistes ──────────────────────────────────────────────────────
+
 void MainComponent::recordOrFinish(std::size_t index) {
-    const auto* processor = engine_.track(index);
-    if (processor != nullptr && processor->track().state() == TrackState::Recording) {
-        postCommand(EngineCommand::Action::FinishRecording, index, 1.0F, false);
-    } else {
-        postCommand(EngineCommand::Action::Record, index, 1.0F, false);
+    if (engine_.trackCount() == 0) {
+        juce::Logger::writeToLog(
+            "Enregistrement impossible : moteur non initialise (audio non demarre)");
+        return;
     }
+    const auto* processor = engine_.track(index);
+    const TrackState state = processor != nullptr ? processor->track().state() : TrackState::Empty;
+
+    if (state == TrackState::Recording) {
+        // Fin de la prise en cours -> la piste passe en lecture.
+        postCommand(EngineCommand::Action::FinishRecording, index, 1.0F, false);
+        anyTrackRecording_.store(false, std::memory_order_release);
+        juce::Logger::writeToLog("Rec piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " : fin d'enregistrement (-> Playing)");
+        return;
+    }
+
+    // Nouvelle prise. record() exige l'etat Empty : si la piste contient deja une
+    // boucle (Playing/Stopped/Overdubbing), on l'efface d'abord, sinon la commande
+    // Record etait rejetee en silence et le bouton restait bloque (anyTrackRecording_
+    // restait a true, coupant le haut-parleur). Le Clear rend record() toujours valide.
+    if (state != TrackState::Empty) {
+        postCommand(EngineCommand::Action::Clear, index, 1.0F, false);
+        juce::Logger::writeToLog("Rec piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " : nouvelle prise, ancien contenu efface (etat " +
+                                 voicelive::core::toString(state) + ")");
+    }
+    postCommand(EngineCommand::Action::Record, index, 1.0F, false);
+    anyTrackRecording_.store(true, std::memory_order_release);
+    juce::Logger::writeToLog("Rec piste " + juce::String(static_cast<int>(index) + 1) +
+                             " : debut d'enregistrement (-> Recording)");
 }
 
 void MainComponent::postCommand(EngineCommand::Action action, std::size_t track, float gain,
                                 bool muted) {
+    if (engine_.trackCount() == 0) {
+        juce::Logger::writeToLog(juce::String("Commande ignoree (moteur non pret) : ") +
+                                 actionName(action) + " piste " +
+                                 juce::String(static_cast<int>(track) + 1));
+        return;
+    }
     EngineCommand command;
     command.action = action;
     command.track = track;
@@ -372,8 +1928,562 @@ void MainComponent::postCommand(EngineCommand::Action action, std::size_t track,
     command.muted = muted;
     const bool accepted = engine_.post(command);
 
-    // Trace chaque clic : prouve que l'UI répond, même si l'audio est mort.
+    if (action == EngineCommand::Action::Clear || action == EngineCommand::Action::Stop) {
+        anyTrackRecording_.store(false, std::memory_order_release);
+    }
+
     juce::Logger::writeToLog(juce::String("Clic piste ") +
                              juce::String(static_cast<int>(track) + 1) + " : " +
                              actionName(action) + (accepted ? "" : "  (FILE PLEINE)"));
+}
+
+// ─── Détection de BPM & synchronisation ──────────────────────────────────────
+
+void MainComponent::detectAndSyncBpm(std::size_t index) {
+    const auto* proc = engine_.track(index);
+    if (proc == nullptr) {
+        return;
+    }
+    const auto& audio = proc->audio();
+    const std::size_t len = audio.loopLength();
+    if (len == 0) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "BPM Sync",
+            "La piste " + juce::String(static_cast<int>(index) + 1) + " est vide.");
+        return;
+    }
+
+    // Copier les données audio pour l'analyse (ne pas bloquer le thread audio)
+    std::vector<float> buf(len);
+    for (std::size_t s = 0; s < len; ++s) {
+        buf[s] = audio.sampleAt(s);
+    }
+
+    // Configurer le détecteur avec la fréquence d'échantillonnage courante
+    voicelive::dsp::BpmDetector::Config cfg;
+    cfg.sampleRate = static_cast<unsigned>(sampleRate_);
+    const voicelive::dsp::BpmDetector det{cfg};
+
+    const auto detected = det.detect(buf);
+
+    if (!detected.has_value()) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "BPM Sync",
+            "Impossible de détecter le tempo de la piste " +
+                juce::String(static_cast<int>(index) + 1) +
+                ".\n\nCauses possibles :\n"
+                "• Piste trop courte (< 2 temps)\n"
+                "• Signal trop faible ou sans structure rythmique\n"
+                "• Contenu purement mélodique sans attaques marquées");
+        juce::Logger::writeToLog("BPM detect piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " : echec");
+        return;
+    }
+
+    const float bpm = *detected;
+    const juce::String msg = "Tempo détecté sur la piste " +
+                             juce::String(static_cast<int>(index) + 1) + " : " +
+                             juce::String(bpm, 1) +
+                             " BPM\n\n"
+                             "Appliquer ce tempo au transport ?";
+
+    juce::AlertWindow::showOkCancelBox(
+        juce::AlertWindow::QuestionIcon, "BPM Sync", msg, "Appliquer", "Annuler", nullptr,
+        juce::ModalCallbackFunction::create([this, bpm](int result) {
+            if (result == 1) {
+                const double clamped = juce::jlimit(40.0, 240.0, static_cast<double>(bpm));
+                bpmSlider_.setValue(clamped, juce::sendNotificationSync);
+                juce::Logger::writeToLog("BPM sync applique : " + juce::String(clamped, 1));
+            }
+        }));
+}
+
+// ─── Edition de piste ─────────────────────────────────────────────────────────
+
+void MainComponent::cutSelection(std::size_t index) {
+    auto& wf = waveforms_[index];
+    if (!wf.hasSelection()) {
+        juce::Logger::writeToLog("Cut : pas de selection sur piste " +
+                                 juce::String(static_cast<int>(index) + 1));
+        return;
+    }
+    if (pendingEdit_) {
+        juce::Logger::writeToLog("Edit deja en attente, annule");
+        return;
+    }
+
+    const auto* proc = engine_.track(index);
+    if (!proc)
+        return;
+    const auto& audio = proc->audio();
+    const std::size_t len = audio.loopLength();
+    if (len == 0)
+        return;
+
+    auto [n0, n1] = wf.selectionNormalized();
+    const std::size_t s0 = static_cast<std::size_t>(n0 * static_cast<float>(len));
+    const std::size_t s1 = static_cast<std::size_t>(n1 * static_cast<float>(len));
+
+    std::vector<float> edited;
+    edited.reserve(len - (s1 - s0));
+    for (std::size_t s = 0; s < s0; ++s)
+        edited.push_back(audio.sampleAt(s));
+    for (std::size_t s = s1; s < len; ++s)
+        edited.push_back(audio.sampleAt(s));
+
+    postCommand(EngineCommand::Action::Stop, index, 1.0F, false);
+    pendingEdit_ = PendingEdit{index, std::move(edited)};
+    wf.clearSelection();
+    juce::Logger::writeToLog("Cut programme sur piste " +
+                             juce::String(static_cast<int>(index) + 1));
+}
+
+void MainComponent::trimToSelection(std::size_t index) {
+    auto& wf = waveforms_[index];
+    if (!wf.hasSelection()) {
+        juce::Logger::writeToLog("Trim : pas de selection sur piste " +
+                                 juce::String(static_cast<int>(index) + 1));
+        return;
+    }
+    if (pendingEdit_) {
+        juce::Logger::writeToLog("Edit deja en attente, annule");
+        return;
+    }
+
+    const auto* proc = engine_.track(index);
+    if (!proc)
+        return;
+    const auto& audio = proc->audio();
+    const std::size_t len = audio.loopLength();
+    if (len == 0)
+        return;
+
+    auto [n0, n1] = wf.selectionNormalized();
+    const std::size_t s0 = static_cast<std::size_t>(n0 * static_cast<float>(len));
+    const std::size_t s1 = static_cast<std::size_t>(n1 * static_cast<float>(len));
+
+    std::vector<float> edited;
+    edited.reserve(s1 - s0);
+    for (std::size_t s = s0; s < s1; ++s)
+        edited.push_back(audio.sampleAt(s));
+
+    postCommand(EngineCommand::Action::Stop, index, 1.0F, false);
+    pendingEdit_ = PendingEdit{index, std::move(edited)};
+    wf.clearSelection();
+    juce::Logger::writeToLog("Trim programme sur piste " +
+                             juce::String(static_cast<int>(index) + 1));
+}
+
+void MainComponent::checkPendingEdit() {
+    if (!pendingEdit_)
+        return;
+
+    const auto& edit = *pendingEdit_;
+    const auto* proc = engine_.track(edit.trackIndex);
+    if (!proc) {
+        pendingEdit_.reset();
+        return;
+    }
+
+    const auto state = proc->track().state();
+    if (state != TrackState::Stopped && state != TrackState::Empty)
+        return;
+
+    // La piste est arretee : process() n'accede plus a audio_, on peut editer.
+    applyTrackEdit(edit.trackIndex, std::move(pendingEdit_->newSamples));
+    pendingEdit_.reset();
+}
+
+void MainComponent::applyTrackEdit(std::size_t index, std::vector<float> newSamples) {
+    wav::AudioData data;
+    data.samples = std::move(newSamples);
+    data.sampleRate = static_cast<unsigned>(sampleRate_);
+    data.channels = 1;
+
+    const auto status = engine_.importTrack(index, data);
+    if (!status.ok()) {
+        juce::Logger::writeToLog("Edit echoue piste " + juce::String(static_cast<int>(index) + 1));
+    } else {
+        postCommand(EngineCommand::Action::Play, index, 1.0F, false);
+        juce::Logger::writeToLog("Edit applique piste " +
+                                 juce::String(static_cast<int>(index) + 1) + " (" +
+                                 juce::String(static_cast<int>(data.samples.size())) + " samples)");
+    }
+}
+
+// ─── Mix Master ───────────────────────────────────────────────────────────────
+
+void MainComponent::renderMixToTrack() {
+    std::size_t mixLen = 0;
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (!includeBtns_[i].getToggleState())
+            continue;
+        if (const auto* proc = engine_.track(i); proc != nullptr)
+            mixLen = std::max(mixLen, proc->audio().loopLength());
+    }
+    if (mixLen == 0) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "Render Mix",
+            "Aucune piste incluse ou toutes vides.\n"
+            "Activez le bouton MIX sur au moins une piste enregistree.");
+        return;
+    }
+
+    // Frequence d'echantillonnage courante (SampleRate value-type requis par prepare()).
+    const auto srUnsigned = static_cast<unsigned>(juce::jmax(1.0, sampleRate_));
+    const auto sr = SampleRate::create(srUnsigned);
+    if (!sr.ok()) {
+        return;
+    }
+
+    std::vector<float> mixData(mixLen, 0.0F);
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (!includeBtns_[i].getToggleState())
+            continue;
+        const auto* proc = engine_.track(i);
+        if (!proc)
+            continue;
+        const auto& audio = proc->audio();
+        const std::size_t trackLen = audio.loopLength();
+        if (trackLen == 0 || strips_[i].muteButton.getToggleState())
+            continue;
+
+        // Copie des echantillons bruts (en boucle sur toute la duree du mix).
+        std::vector<float> trackBuf(mixLen);
+        for (std::size_t s = 0; s < mixLen; ++s)
+            trackBuf[s] = audio.sampleAt(s % trackLen);
+
+        // Application des effets de piste avec des instances isolees (la chaine live
+        // n'est pas touchee : le rendu offline ne perturbe pas la performance en cours).
+        // Chaque instance part d'un etat initial vierge, exactement comme lors d'une
+        // nouvelle lecture depuis le debut de boucle.
+        const std::span<float> block{trackBuf.data(), trackBuf.size()};
+        const auto& fx = fxPanels_[i];
+
+        // Meme ordre que la chaine live (setupEffects) :
+        // gate -> distorsion -> wah -> phaser -> flanger -> chorus -> tremolo
+        // -> delay -> reverb.
+        if (fx.gate != nullptr && fx.gateBtn.getToggleState()) {
+            voicelive::dsp::NoiseGate g;
+            g.setEnabled(true);
+            g.setThreshold(fx.gate->thresholdDb());
+            g.setAttack(fx.gate->attackMs());
+            g.setRelease(fx.gate->releaseMs());
+            g.prepare(sr.value(), mixLen);
+            g.process(block);
+        }
+        if (fx.distortion != nullptr && fx.distBtn.getToggleState()) {
+            voicelive::dsp::Distortion d;
+            d.setMode(fx.distortion->mode());
+            d.setDrive(fx.distortion->drive());
+            d.setTone(fx.distortion->tone());
+            d.setLevel(fx.distortion->level());
+            d.setMix(fx.distortion->mix());
+            d.prepare(sr.value(), mixLen);
+            d.process(block);
+        }
+        if (fx.wah != nullptr && fx.wahBtn.getToggleState()) {
+            voicelive::dsp::Wah w;
+            w.setRate(static_cast<float>(fx.wahRateSlider.getValue()));
+            w.setMinFrequency(fx.wah->minFrequency());
+            w.setMaxFrequency(fx.wah->maxFrequency());
+            w.setResonance(fx.wah->resonance());
+            w.setMix(fx.wah->mix());
+            w.prepare(sr.value(), mixLen);
+            w.process(block);
+        }
+        if (fx.phaser != nullptr && fx.phaserBtn.getToggleState()) {
+            voicelive::dsp::Phaser p;
+            p.setRate(fx.phaser->rate());
+            p.setDepth(fx.phaser->depth());
+            p.setFeedback(fx.phaser->feedback());
+            p.setMix(fx.phaser->mix());
+            p.prepare(sr.value(), mixLen);
+            p.process(block);
+        }
+        if (fx.flanger != nullptr && fx.flangerBtn.getToggleState()) {
+            voicelive::dsp::Flanger fl;
+            fl.setRate(fx.flanger->rate());
+            fl.setDepth(fx.flanger->depth());
+            fl.setFeedback(fx.flanger->feedback());
+            fl.setMix(fx.flanger->mix());
+            fl.prepare(sr.value(), mixLen);
+            fl.process(block);
+        }
+        if (fx.chorus != nullptr && fx.chorusBtn.getToggleState()) {
+            voicelive::dsp::Chorus c;
+            c.setRate(fx.chorus->rate());
+            c.setDepth(fx.chorus->depth());
+            c.setMix(fx.chorus->mix());
+            c.prepare(sr.value(), mixLen);
+            c.process(block);
+        }
+        if (fx.tremolo != nullptr && fx.tremBtn.getToggleState()) {
+            voicelive::dsp::Tremolo t;
+            t.setRate(fx.tremolo->rate());
+            t.setDepth(fx.tremolo->depth());
+            t.setMix(fx.tremolo->mix());
+            t.prepare(sr.value(), mixLen);
+            t.process(block);
+        }
+        if (fx.delay != nullptr && fx.delayBtn.getToggleState()) {
+            voicelive::dsp::Delay d;
+            d.setDelaySeconds(fx.delay->delaySeconds());
+            d.setFeedback(fx.delay->feedback());
+            d.setMix(fx.delay->mix());
+            d.prepare(sr.value(), mixLen);
+            d.process(block);
+        }
+        if (fx.reverb != nullptr && fx.reverbBtn.getToggleState()) {
+            voicelive::dsp::Reverb r;
+            r.setRoomSize(fx.reverb->roomSize());
+            r.setDamping(fx.reverb->damping());
+            r.setWet(fx.reverb->wet());
+            r.setDry(fx.reverb->dry());
+            r.prepare(sr.value(), mixLen);
+            r.process(block);
+        }
+
+        // Accumulation dans le mix avec le gain de piste.
+        const float gain = static_cast<float>(strips_[i].gainSlider.getValue());
+        for (std::size_t s = 0; s < mixLen; ++s)
+            mixData[s] += trackBuf[s] * gain;
+    }
+
+    // EQ master applique sur le mix complet (instance isolee, memes parametres
+    // que l'EQ live lus depuis les sliders UI — source de verite).
+    if (masterEq_ != nullptr) {
+        voicelive::dsp::Equalizer eq;
+        eq.setLowGain(masterEq_->lowGain());
+        eq.setMidGain(masterEq_->midGain());
+        eq.setHighGain(masterEq_->highGain());
+        eq.prepare(sr.value(), mixLen);
+        eq.process(std::span<float>{mixData.data(), mixData.size()});
+    }
+
+    for (float& s : mixData)
+        s = juce::jlimit(-1.0F, 1.0F, s);
+
+    // Stop playback before overwriting the transport source
+    mixTransport_.stop();
+    mixTransport_.setSource(nullptr);
+    mixMemorySource_.reset();
+
+    mixTrackAudio_.prepare(mixLen);
+    mixTrackAudio_.append(std::span<const float>{mixData.data(), mixData.size()});
+    mixWaveform_.setAudio(&mixTrackAudio_);
+    mixWaveform_.setPlayhead(0, 0, sampleRate_);
+    mixWaveform_.clearSelection();
+    mixWaveform_.repaint();
+
+    // Alimenter l'AudioTransportSource pour la lecture de preview
+    mixAudioBuffer_.setSize(1, static_cast<int>(mixLen), false, true, false);
+    for (std::size_t s = 0; s < mixLen; ++s)
+        mixAudioBuffer_.setSample(0, static_cast<int>(s), mixData[s]);
+    mixMemorySource_ = std::make_unique<juce::MemoryAudioSource>(mixAudioBuffer_, false, false);
+    mixTransport_.setSource(mixMemorySource_.get(), 0, nullptr, sampleRate_, 1);
+    mixTransport_.setPosition(0.0);
+    lastMixWavePos_ = 0;
+    mixTimeLabel_.setText("0:00.0 / ...", juce::dontSendNotification);
+
+    juce::Logger::writeToLog("Mix rendu : " + juce::String(static_cast<int>(mixLen)) + " samples");
+}
+
+void MainComponent::cutMixSelection() {
+    if (!mixWaveform_.hasSelection()) {
+        juce::Logger::writeToLog("Cut mix : pas de selection");
+        return;
+    }
+    const std::size_t len = mixTrackAudio_.loopLength();
+    if (len == 0)
+        return;
+
+    auto [n0, n1] = mixWaveform_.selectionNormalized();
+    const std::size_t s0 = static_cast<std::size_t>(n0 * static_cast<float>(len));
+    const std::size_t s1 = static_cast<std::size_t>(n1 * static_cast<float>(len));
+
+    std::vector<float> edited;
+    edited.reserve(len - (s1 - s0));
+    for (std::size_t s = 0; s < s0; ++s)
+        edited.push_back(mixTrackAudio_.sampleAt(s));
+    for (std::size_t s = s1; s < len; ++s)
+        edited.push_back(mixTrackAudio_.sampleAt(s));
+
+    mixTrackAudio_.prepare(edited.size());
+    mixTrackAudio_.append(std::span<const float>{edited.data(), edited.size()});
+    mixWaveform_.clearSelection();
+    juce::Logger::writeToLog("Cut mix applique");
+}
+
+void MainComponent::trimMixSelection() {
+    if (!mixWaveform_.hasSelection()) {
+        juce::Logger::writeToLog("Trim mix : pas de selection");
+        return;
+    }
+    const std::size_t len = mixTrackAudio_.loopLength();
+    if (len == 0)
+        return;
+
+    auto [n0, n1] = mixWaveform_.selectionNormalized();
+    const std::size_t s0 = static_cast<std::size_t>(n0 * static_cast<float>(len));
+    const std::size_t s1 = static_cast<std::size_t>(n1 * static_cast<float>(len));
+
+    std::vector<float> edited;
+    edited.reserve(s1 - s0);
+    for (std::size_t s = s0; s < s1; ++s)
+        edited.push_back(mixTrackAudio_.sampleAt(s));
+
+    mixTrackAudio_.prepare(edited.size());
+    mixTrackAudio_.append(std::span<const float>{edited.data(), edited.size()});
+    mixWaveform_.clearSelection();
+    juce::Logger::writeToLog("Trim mix applique");
+}
+
+// ─── Export / Sauvegarde ──────────────────────────────────────────────────────
+
+void MainComponent::exportMix() {
+    const std::size_t len = mixTrackAudio_.loopLength();
+    if (len == 0) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "Export Mix",
+            "Le mix n'a pas encore ete rendu.\n"
+            "Appuyez d'abord sur [Render Mix], editez si besoin,\npuis exportez.");
+        return;
+    }
+
+    wav::AudioData data;
+    data.sampleRate = static_cast<unsigned>(sampleRate_);
+    data.channels = 1;
+    data.samples.resize(len);
+    for (std::size_t s = 0; s < len; ++s)
+        data.samples[s] = mixTrackAudio_.sampleAt(s);
+
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
+    dir.createDirectory();
+    const juce::String filename =
+        "mix_" + juce::String(juce::Time::getCurrentTime().toMilliseconds()) + ".wav";
+    const juce::File outFile = dir.getChildFile(filename);
+    const std::string path = outFile.getFullPathName().toStdString();
+
+    const auto status = wav::write(path, data);
+    if (!status.ok()) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Export Mix",
+                                               "Echec de l'ecriture du fichier WAV.");
+        juce::Logger::writeToLog("Export mix echoue");
+    } else {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::InfoIcon, "Export Mix",
+            "Mix exporte avec succes !\n\n" + outFile.getFullPathName() +
+                "\n\nAccessible depuis le gestionnaire de fichiers Android\n"
+                "sous Android > data > [package] > files");
+        juce::Logger::writeToLog("Mix exporte : " + juce::String(path.c_str()));
+    }
+}
+
+void MainComponent::exportTrack(std::size_t index) {
+    const auto* proc = engine_.track(index);
+    if (!proc)
+        return;
+    const auto& audio = proc->audio();
+    const std::size_t len = audio.loopLength();
+    if (len == 0) {
+        juce::Logger::writeToLog("Export piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " : vide");
+        return;
+    }
+
+    wav::AudioData data;
+    data.sampleRate = static_cast<unsigned>(sampleRate_);
+    data.channels = 1;
+    data.samples.resize(len);
+    for (std::size_t s = 0; s < len; ++s) {
+        data.samples[s] = audio.sampleAt(s);
+    }
+
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
+    dir.createDirectory();
+    const juce::String filename = "track" + juce::String(static_cast<int>(index) + 1) + "_" +
+                                  juce::String(juce::Time::getCurrentTime().toMilliseconds()) +
+                                  ".wav";
+    const juce::File outFile = dir.getChildFile(filename);
+    const std::string path = outFile.getFullPathName().toStdString();
+
+    const auto status = wav::write(path, data);
+    if (!status.ok()) {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::WarningIcon, "Export Piste",
+            "Echec de l'export de la piste " + juce::String(static_cast<int>(index) + 1));
+        juce::Logger::writeToLog("Export piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " echoue");
+    } else {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::InfoIcon, "Export Piste",
+            "Piste " + juce::String(static_cast<int>(index) + 1) + " exportee !\n\n" +
+                outFile.getFullPathName() +
+                "\n\nAccessible depuis le gestionnaire de fichiers Android\n"
+                "sous Android > data > [package] > files");
+        juce::Logger::writeToLog("Piste " + juce::String(static_cast<int>(index) + 1) +
+                                 " exportee : " + juce::String(path.c_str()));
+    }
+}
+
+void MainComponent::saveProject() {
+    auto result = engine_.exportSettings();
+    if (!result.ok()) {
+        juce::Logger::writeToLog("Sauvegarde : echec lecture parametres moteur");
+        return;
+    }
+
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
+    dir.createDirectory();
+    const juce::File outFile = dir.getChildFile("voicelive_project.vlp");
+    const std::string path = outFile.getFullPathName().toStdString();
+
+    const auto status = project_io::saveToFile(path, result.value());
+    if (!status.ok()) {
+        juce::AlertWindow::showMessageBoxAsync(juce::AlertWindow::WarningIcon, "Sauvegarde",
+                                               "Echec de la sauvegarde du projet.");
+        juce::Logger::writeToLog("Sauvegarde echouee");
+    } else {
+        juce::AlertWindow::showMessageBoxAsync(
+            juce::AlertWindow::InfoIcon, "Sauvegarde",
+            "Projet sauvegarde !\n\n" + outFile.getFullPathName());
+        juce::Logger::writeToLog("Projet sauvegarde : " + juce::String(path.c_str()));
+    }
+}
+
+void MainComponent::loadProject() {
+    const juce::File dir =
+        juce::File::getSpecialLocation(juce::File::commonApplicationDataDirectory);
+    const std::string path =
+        dir.getChildFile("voicelive_project.vlp").getFullPathName().toStdString();
+
+    auto result = project_io::loadFromFile(path);
+    if (!result.ok()) {
+        juce::Logger::writeToLog("Chargement echoue (fichier absent ou invalide) : " +
+                                 juce::String(path.c_str()));
+        return;
+    }
+
+    const auto status = engine_.applySettings(result.value());
+    if (!status.ok()) {
+        juce::Logger::writeToLog("Application des parametres echouee");
+        return;
+    }
+
+    // Synchroniser les sliders UI avec les valeurs chargees.
+    auto& project = result.value();
+    bpmSlider_.setValue(project.transport().bpm().value(), juce::sendNotificationSync);
+    for (std::size_t i = 0; i < kTrackCount && i < project.trackCount(); ++i) {
+        if (auto* t = project.track(i)) {
+            strips_[i].gainSlider.setValue(
+                juce::jlimit(0.0, 2.0, static_cast<double>(t->gain().linear())),
+                juce::sendNotificationSync);
+            strips_[i].muteButton.setToggleState(t->isMuted(), juce::sendNotificationSync);
+        }
+    }
+    juce::Logger::writeToLog("Projet charge depuis : " + juce::String(path.c_str()));
 }

@@ -43,7 +43,7 @@ rien — c'est ce qui le rend compilable en WASM et testable sans matériel audi
 | `core/`  | 🟢 en cours | `LooperTrack`, `Transport` (tempo/quantif.), `Project`, types forts, `Result/Status` |
 | `dsp/`   | 🟢 en cours | `Effect` (contrat RT) · `Reverb` · `Delay` · `EffectChain` (chaîne par piste) |
 | `engine/`| 🟢 en cours | `LooperEngine` (N pistes + transport + file de commandes + mix), `RingBuffer`, `LoopAudio`, `Mixer`, `TrackProcessor` |
-| `app/`   | 🟡 amorcé   | App JUCE desktop (pont moteur ↔ audio + UI mini), opt-in `-DVOICELIVE_BUILD_APP` |
+| `app/`   | 🟢 en cours | App JUCE desktop **+ Android (APK CI)** : UI multipiste (édition, effets, EQ, spectre, accordeur, projet), détection casque (JNI Android) + anti-larsen, latence AAudio. Opt-in `-DVOICELIVE_BUILD_APP` |
 
 ## 4. Choix techniques
 

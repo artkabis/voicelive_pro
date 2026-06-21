@@ -8,6 +8,7 @@ add_library(voicelive_engine
     src/ChannelUtils.cpp
     src/Metronome.cpp
     src/WavFile.cpp
+    src/AudioDeviceHint.cpp
 )
 add_library(voicelive::engine ALIAS voicelive_engine)
 
@@ -18,6 +19,15 @@ target_compile_features(voicelive_engine PUBLIC cxx_std_20)
 
 voicelive_set_target_warnings(voicelive_engine)
 voicelive_enable_sanitizers(voicelive_engine)
+
+# Android ARM optimizations (CMake cross-compilation path).
+if(ANDROID)
+    if(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+        target_compile_options(voicelive_engine PRIVATE -mfpu=neon -mfloat-abi=softfp -ffast-math -ftree-vectorize)
+    elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+        target_compile_options(voicelive_engine PRIVATE -march=armv8-a -ffast-math -ftree-vectorize)
+    endif()
+endif()
 
 if(VOICELIVE_BUILD_TESTS)
     add_executable(engine_tests
@@ -30,6 +40,7 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_channel_utils.cpp
         tests/test_metronome.cpp
         tests/test_wav_file.cpp
+        tests/test_audio_device_hint.cpp
     )
     target_link_libraries(engine_tests PRIVATE voicelive::engine voicelive::testing)
 

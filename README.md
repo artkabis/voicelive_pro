@@ -6,7 +6,7 @@ bâti sur un **cœur C++ pur, testé et portable** — desktop, mobile (Android)
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Language](https://img.shields.io/badge/C%2B%2B-20-blue)
-![Tests](https://img.shields.io/badge/tests-77%20✓-success)
+![Tests](https://img.shields.io/badge/tests-178%20✓-success)
 ![Platform](https://img.shields.io/badge/platform-desktop%20%7C%20Android%20%7C%20web-lightgrey)
 
 > ℹ️ **v2 — refonte C++.** Ce README décrit l'architecture refactorisée. La v1
@@ -31,7 +31,8 @@ WebAssembly, et sont testables à 100 % en isolation.
 │ engine/   Temps réel : mixage, boucles, file de commandes      │
 │           lock-free, processeurs de piste                      │
 ├──────────────────────────────────────────────────────────────┤
-│ dsp/      Effets temps réel (Reverb, Delay, chaîne d'effets)   │
+│ dsp/      Effets temps réel (reverb, delay, disto, gate,       │
+│           modulations, EQ, compresseur, chaîne d'effets)       │
 ├──────────────────────────────────────────────────────────────┤
 │ core/     Logique métier pure, zéro dépendance                 │
 └──────────────────────────────────────────────────────────────┘
@@ -42,9 +43,9 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 
 | Couche    | État        | Tests |
 |-----------|-------------|-------|
-| `core/`   | 🟢 en cours | 30    |
-| `dsp/`    | 🟢 en cours | 13    |
-| `engine/` | 🟢 en cours | 34    |
+| `core/`   | 🟢 en cours | 41    |
+| `dsp/`    | 🟢 en cours | 70    |
+| `engine/` | 🟢 en cours | 67    |
 | `app/`    | 🟡 amorcé (JUCE) | via CI |
 
 ---
@@ -74,8 +75,16 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 - **Delay** (écho à ligne de retard : délai, feedback, mix).
 - **Chorus** (ligne de retard modulée par LFO : rate, depth, mix).
 - **Wah** (passe-bande résonant balayé par LFO : fréquences, résonance, mix).
-- **Chaîne d'effets par piste** (`EffectChain`) : effets ordonnés, insérables à
-  chaud, interface `Effect` commune à contrat temps réel strict.
+- **Distortion** (waveshaper 3 modes — soft-clip/hard-clip/fuzz — + drive, tone,
+  level, mix) : cœur du son guitare électrique saturée.
+- **Noise Gate** (détecteur d'enveloppe + seuil/attaque/relâche) : supprime
+  souffle et larsen entre les notes, indispensable avec du gain.
+- **Tremolo** (modulation d'amplitude par LFO : rate, depth, mix).
+- **Phaser** (cascade de 6 passe-tout balayés + feedback : rate, depth, mix).
+- **Flanger** (retard court modulé 1–7 ms + feedback : rate, depth, mix).
+- **Chaîne d'effets par piste** (`EffectChain`) : effets ordonnés en signal
+  « guitare » (gate → distorsion → wah → modulations → delay → reverb),
+  insérables à chaud, interface `Effect` commune à contrat temps réel strict.
 
 ### 🧩 Moteur temps réel (`engine`)
 - **`LooperEngine`** : assemble N pistes + transport + mixage.
@@ -103,8 +112,25 @@ Chaque couche ne dépend **que** des couches inférieures. Détails :
 
 ### 🖥️ Application (`app`, JUCE)
 - **UI multipiste** : 3 pistes (Rec/Play/Stop/Clear + gain + mute) via la file
-  lock-free, **métronome + BPM**, **égaliseur de mastering** (3 bandes) et
-  **accordeur** (affichage note + cents rafraîchi par Timer).
+  lock-free, **formes d'onde éditables** (cut/trim), **chaîne d'effets par piste**
+  (REV/DLY/WAH/CHR + DST/GATE/TRM/PHS/FLG), **métronome + BPM**, **égaliseur de
+  mastering** (3 bandes), **spectre temps réel**, **accordeur**, **rendu/export
+  WAV** et **sauvegarde/chargement de projet**.
+- **Transport global** : trois boutons pour démarrer toutes les pistes ayant du
+  contenu **en synchronisation** (~1 bloc, via burst dans la file lock-free),
+  mettre en pause (position conservée) ou arrêter toutes les pistes.
+- **Formes d'onde interactives** : **zoom** par boutons `[+]`/`[−]` (sélection de
+  coupe précise), **double-clic pour déplacer la tête de lecture** (seek), et
+  sélection de zone au glisser pour cut/trim.
+- **Sélecteur de périphériques audio** : liste les entrées/sorties par nom exact,
+  routage réel via Oboe (`setAudioDeviceSetup`), rafraîchi au hotplug.
+- **Détection casque & anti-larsen** : haut-parleur coupé pendant
+  l'enregistrement sauf si un casque est détecté (jack / USB-C). Sur Android, la
+  détection passe par `AudioManager.getDevices()` (JNI), JUCE ne remontant pas le
+  matériel réel. Voyant LED d'état dans l'UI ; le panneau Diag affiche tous les
+  types de périphériques énumérés.
+- **Basse latence Android** : buffer négocié par Oboe (chemin AAudio rapide,
+  mode `Shared` pour survivre au reroutage USB-C), Release `-O3 -ffast-math`.
 - Pipelines CI : **binaire desktop** et **APK Android (debug)** en artefacts.
 
 ### 🛡️ Robustesse transverse
@@ -183,7 +209,7 @@ cmake --build build --target VoiceLiveApp -j
 ### APK Android
 
 Généré par la CI ([`.github/workflows/android.yml`](.github/workflows/android.yml)) :
-**Actions → « Android APK » → artefact `VoiceLivePro-debug-apk`**, puis sideload.
+**Actions → « Android APK » → artefact `VoiceLivePro-r<run>-<sha>`**, puis sideload.
 Le build Android ne se fait pas en local sans NDK ; détails dans
 [`app/README.md`](app/README.md).
 
@@ -192,12 +218,19 @@ Le build Android ne se fait pas en local sans NDK ; détails dans
 ## 🗺️ Roadmap
 
 - [x] Pipeline APK Android : **APK debug signé, généré et téléchargeable** en
-      artefact CI (`VoiceLivePro-debug-apk`).
-- [ ] 3ᵉ effet (chorus / wah) + insertion d'effets pilotée en temps réel.
-- [ ] UI multipiste complète (niveaux, sélection d'effets).
-- [ ] Sauvegarde/chargement de projet (sérialisation de `core::Project`).
+      artefact CI.
+- [x] Effets **chorus / wah** + insertion d'effets pilotée par piste.
+- [x] **Effets guitare** : distorsion, noise gate, tremolo, phaser, flanger
+      (chaîne ordonnée en signal guitare).
+- [x] **UI multipiste complète** (gain/mute, formes d'onde éditables + zoom +
+      seek, panneaux d'effets, EQ de mastering, spectre, accordeur).
+- [x] **Transport global** (play/pause/stop synchronisés de toutes les pistes).
+- [x] **Sélecteur de périphériques audio** (routage réel via Oboe).
+- [x] **Sauvegarde/chargement de projet** (`core::project_io`) + export WAV.
+- [x] **Détection casque** (jack / USB-C via JNI Android) + anti-larsen.
+- [x] **Optimisation latence Android** (buffer Oboe/AAudio, `-O3 -ffast-math`).
 - [ ] Cible **web** (cœur en WebAssembly + AudioWorklet).
-- [ ] Signature release Android (Play Store).
+- [ ] Signature **release** Android (Play Store) + symboles natifs en artefact CI.
 
 ---
 
@@ -211,7 +244,7 @@ voicelive_pro/
 ├── app/         # application JUCE (desktop/mobile)
 ├── testing/     # micro-framework de test partagé
 ├── cmake/       # modules CMake (warnings, sanitizers)
-├── docs/        # ARCHITECTURE, CONVENTIONS, DEVLOG
+├── docs/        # ARCHITECTURE, CONVENTIONS, DEBUG_MOBILE, DEVLOG
 ├── .github/     # CI (cœur, desktop, Android)
 ├── scripts/     # check.sh (reproduit la CI en local)
 ├── VoiceLivePro.jucer  # projet Projucer (export Android)

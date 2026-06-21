@@ -10,7 +10,9 @@ name: Android APK
 on:
   workflow_dispatch:
   push:
-    branches: ["claude/audio-recording-app-feasibility-g7nde9"]
+    branches:
+      - "claude/audio-recording-app-feasibility-g7nde9"
+      - "claude/android-crashes-ui-fix-ycyyth"
     paths:
       - "app/**"
       - "core/**"
@@ -54,6 +56,42 @@ jobs:
       - name: Récupérer JUCE 8.0.4
         run: git clone --depth 1 --branch 8.0.4 https://github.com/juce-framework/JUCE.git juce
 
+      - name: Forcer Oboe en mode partagé (robustesse hotplug USB-C)
+        # Le backend Oboe de JUCE ouvre TOUS ses flux en SharingMode::Exclusive
+        # (latence minimale mais fragile). Au branchement d'un casque/DAC USB-C,
+        # la réouverture exclusive échoue souvent (jassert juce_Oboe_android.cpp:484)
+        # → audio mort. Le mode Shared passe par le mixeur de l'OS : il survit au
+        # reroutage sans échec. Compromis latence négligeable pour un looper.
+        # Le build ÉCHOUE si aucune substitution n'a lieu (détecte un renommage amont).
+        run: |
+          OBOE="juce/modules/juce_audio_devices/native/juce_Oboe_android.cpp"
+          before="$(grep -c "oboe::SharingMode::Exclusive" "$OBOE" || true)"
+          echo "Occurrences Exclusive avant patch : $before"
+          if [ "$before" -eq 0 ]; then
+            echo "ÉCHEC : aucune occurrence SharingMode::Exclusive (source JUCE modifiée ?)"; exit 1
+          fi
+          sed -i 's/oboe::SharingMode::Exclusive/oboe::SharingMode::Shared/g' "$OBOE"
+          after="$(grep -c "oboe::SharingMode::Exclusive" "$OBOE" || true)"
+          echo "Occurrences Exclusive après patch : $after"
+          [ "$after" -eq 0 ] && echo "OK : Oboe forcé en mode Shared ($before remplacées)"
+
+      - name: Rendre scanForDevices() ré-énumérant (rafraîchir le sélecteur au hotplug)
+        # OboeAudioIODeviceType::scanForDevices() est vide en amont : la liste des
+        # périphériques physiques est figée à la création du type. Le sélecteur de
+        # périphérique de l'app ne verrait donc jamais un casque branché APRÈS le
+        # lancement. On le rend ré-énumérant (clear + checkAvailableDevices) pour un
+        # rafraîchissement à chaud. Le build ÉCHOUE si la signature exacte disparaît.
+        run: |
+          OBOE="juce/modules/juce_audio_devices/native/juce_Oboe_android.cpp"
+          NEEDLE="void scanForDevices() override {}"
+          if ! grep -qF "$NEEDLE" "$OBOE"; then
+            echo "ÉCHEC : signature scanForDevices() introuvable (source JUCE modifiée ?)"; exit 1
+          fi
+          sed -i 's|void scanForDevices() override {}|void scanForDevices() override { inputDevices.clear(); outputDevices.clear(); checkAvailableDevices(); }|' "$OBOE"
+          grep -qF "checkAvailableDevices(); }" "$OBOE" \
+            && echo "OK : scanForDevices() ré-énumère désormais" \
+            || { echo "ÉCHEC : patch scanForDevices non appliqué"; exit 1; }
+
       - name: Construire le Projucer
         run: |
           cmake -S juce -B juce-build -DJUCE_BUILD_EXTRAS=ON -DCMAKE_BUILD_TYPE=Release
@@ -92,11 +130,54 @@ jobs:
           mkdir -p ~/.android
           cp ci/debug.keystore ~/.android/debug.keystore
 
+      - name: Diagnostic du projet généré (sources & toolchain)
+        # Aide à repérer en amont un .cpp absent du .jucer (erreur de lien) ou un
+        # mauvais NDK. S'exécute toujours, avant Gradle.
+        run: |
+          echo "::group::Toolchain"
+          echo "NDK installés : $(ls "$ANDROID_SDK_ROOT/ndk" 2>/dev/null || echo '?')"
+          echo "::endgroup::"
+          echo "::group::Sources C++ référencées par le projet Android généré"
+          find Builds/Android -name CMakeLists.txt \
+            -exec grep -hoE "[A-Za-z0-9_/]+\.cpp" {} \; | sort -u || true
+          echo "::endgroup::"
+
       - name: Build Gradle (assembleDebug)
         working-directory: Builds/Android
         run: |
           chmod +x ./gradlew || true
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          set -o pipefail
+          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1 \
+            | tee "$GITHUB_WORKSPACE/gradle-build.log"
+
+      - name: Diagnostic en cas d'échec (erreurs natives ciblées)
+        # La vraie erreur clang/ninja est noyée dans la stacktrace Gradle.
+        # On la ré-affiche seule, à la fin du log, pour un diagnostic immédiat.
+        if: failure()
+        run: |
+          echo "::group::Erreurs de compilation/lien natives"
+          grep -nE "error:|FAILED:|undefined (symbol|reference)|ninja: build stopped|fatal error" \
+            "$GITHUB_WORKSPACE/gradle-build.log" \
+            || echo "Aucune ligne 'error:' détectée — voir l'artefact android-debug-logs."
+          echo "::endgroup::"
+          echo "::group::Logs natifs CMake/.cxx (extraits)"
+          while IFS= read -r f; do
+            echo "----- $f -----"
+            tail -n 40 "$f"
+          done < <(find Builds/Android -path "*/.cxx/*" -name "*.log" 2>/dev/null) || true
+          echo "::endgroup::"
+
+      - name: Archiver les logs de diagnostic (échec uniquement)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-debug-logs-r${{ github.run_number }}
+          path: |
+            gradle-build.log
+            Builds/Android/**/.cxx/**/*.log
+            Builds/Android/**/AndroidManifest.xml
+            Builds/Android/**/CMakeLists.txt
+          if-no-files-found: warn
 
       - name: Publier l'APK (nom unique = numéro de run + commit)
         uses: actions/upload-artifact@v4

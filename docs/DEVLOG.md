@@ -5,6 +5,176 @@ desktop + mobile + web). Entrées en ordre antéchronologique.
 
 ---
 
+## 2026-06-21 — Effets guitare, transport global, sélecteur de périphériques & audit RT
+
+### Effets guitare (`dsp`, +5 effets, +21 tests)
+Cinq effets temps réel sur l'interface `Effect` (process() sans allocation,
+`noexcept`), pensés pour la guitare électrique :
+- **`Distortion`** : mise en forme d'onde 3 modes (soft-clip `tanh`, hard-clip,
+  fuzz asymétrique) + drive, tone (passe-bas un pôle), level, mix.
+- **`NoiseGate`** : porte de bruit (détecteur d'enveloppe + seuil dB, attaque/
+  relâche) ; activable, supprime souffle/larsen entre les notes.
+- **`Tremolo`** : modulation d'amplitude par LFO sinusoïdal (rate/depth/mix).
+- **`Phaser`** : cascade de 6 passe-tout du premier ordre balayés + feedback.
+- **`Flanger`** : retard court (1–7 ms) modulé + feedback + lecture fractionnaire.
+
+Câblés dans `dsp/CMakeLists.txt`, `VoiceLivePro.jucer` **et** l'UI (panneau FX
+par piste, 5 rangées). La **chaîne live a été réordonnée en signal guitare
+classique** : `gate → distorsion → wah → phaser → flanger → chorus → tremolo →
+delay → reverb` (le gate coupe le souffle *avant* la disto, la reverb en dernier).
+Le rendu offline (`renderMix`) applique la **même séquence**. Réordonnancement
+sûr : les états on/off d'effets ne sont pas persistés.
+
+Piège : les effets dont le `process()` ne dépend que de `sampleRate_` doivent
+défaut à **0** (et non `kStudio`) pour que la garde « passthrough avant
+prepare() » fonctionne (3 tests rouges au départ, corrigés).
+
+### Transport global (`app`)
+Trois boutons au-dessus des pistes : **▶ Toutes** (stop des pistes en cours puis
+play de toutes celles ayant du contenu — démarrage **synchronisé** car toutes les
+commandes sont vidées dans le même `while(commands_.pop())` → ~1 bloc), **⏸ Pause**
+(stop des pistes en lecture, **playhead conservé** car `TrackProcessor::stop()` ne
+le réinitialise pas) et **⏹ Stop**.
+
+Correctif CI : `pauseAllTracks` appelait `LooperTrack::isPlaying()` (inexistant —
+c'est une méthode du `TrackProcessor`) → erreur de compilation Android, remplacée
+par un test de `state()`.
+
+### Sélecteur de périphériques & diagnostic casque (`app`)
+- **Sélecteur** entrée/sortie : `OboeAudioIODeviceType` énumère déjà les
+  périphériques physiques (JNI) et route via `setDeviceId()`. L'UI liste les noms
+  exacts et applique le choix via `setAudioDeviceSetup()`. `scanForDevices()` étant
+  vide en amont, un patch CI (`android.yml`) le rend ré-énumérant pour le hotplug.
+- **Diagnostic** : `HeadphoneMonitor` logge désormais **tous** les types de
+  périphériques (`types=[…]`, empaquetés dans un `atomic<int64>`), pas seulement le
+  premier. Constante corrigée : `TYPE_AUX_LINE = 19` (et non 21 = `TYPE_IP`).
+
+### Formes d'onde interactives (`app`)
+Zoom par boutons `[+]`/`[−]` (fenêtre `[viewStart_, viewEnd_]`, cache de crêtes
+invalidé au changement) et **double-clic pour déplacer la tête de lecture**
+(nouvelle commande `EngineCommand::Action::Seek` → `TrackProcessor::setPlayhead`).
+Note : `mouseMagnify()` (pinch) n'est **pas** implémenté par le backend Android de
+JUCE 8.x → les boutons explicites sont la solution fiable sur mobile.
+
+### Audit d'optimisation temps réel
+Vérification du chemin audio : `LoopAudio` (mémoire pré-allouée, 30 s/piste),
+`RingBuffer` SPSC lock-free, `TrackProcessor`/`LooperEngine`/`EffectChain`/effets —
+**aucune allocation ni verrou dans le callback**, confirmé. Mémoire bornée
+(~46 Mo pour 8 pistes). Seul point ajusté : `refreshDeviceList()` (ré-énumération
+JNI) passait à 1 Hz dans le `timerCallback` ; ramené à **~0,33 Hz** (la détection
+casque, qui pilote l'anti-larsen, reste à 1 Hz) pour alléger le thread message.
+
+### Vérifié
+- **178 tests** verts (core 41, dsp 70, engine 67), build warnings-as-errors
+  propre, `clang-format` conforme.
+- UI validée par le build **APK Android** (non compilable en local sans NDK/JUCE).
+
+---
+
+## 2026-06-19 — Correctifs sur appareil : enregistrement & détection USB-C
+
+Tests sur appareil réel (APK) : deux régressions visibles, corrigées.
+
+### 1. Enregistrement cassé (piste restait `Empty`)
+- **Cause** : le constructeur forçait
+  `setAudioDeviceSetup(bufferSize=256, treatAsChosen=true)` juste après
+  `setAudioChannels(2,2)`. Sur Android, cela **rouvrait le périphérique en sortie
+  seule** (device affiché `System Default (Output)`, **micro perdu** → plus rien à
+  enregistrer) et déclenchait un **second `prepareToPlay`** (visible : double
+  `audio pret` dans le journal). La taille 256 était de toute façon **ignorée**
+  (buffer resté à 1920).
+- **Fix** : suppression du bloc. Oboe négocie déjà le buffer basse latence ; la
+  latence reste gérée par Oboe + flags Release `-O3 -ffast-math`.
+
+### 2. Casque USB-C jamais détecté
+- **Cause** : **mauvaise constante** `AudioDeviceInfo` — `TYPE_USB_HEADSET`
+  vaut **22**, pas 8 (8 = `TYPE_BLUETOOTH_A2DP`). Un casque USB-C qui se déclare
+  en type 22 n'était donc jamais reconnu.
+- **Fix** : constantes corrigées (3, 4, 8, 11, 12, **22**, 26, 27) couvrant
+  jack, USB, Bluetooth et BLE.
+
+### Diagnostic ajouté
+- `HeadphoneMonitor::diagnostic()` expose dans le **panneau Diag** le résultat de
+  la dernière sonde JNI : code (`pas de contexte app` / `pas d'AudioManager` /
+  `getDevices KO` / `ok`), nombre de sorties énumérées, et le 1ᵉʳ type rencontré.
+  Un échec silencieux (contexte null, etc.) est désormais visible sur l'appareil
+  sans débogueur.
+
+---
+
+## 2026-06-19 — Détection casque USB-C (Android), latence & durcissement CI
+
+### Contexte
+Sur Android, le voyant casque restait rouge et l'audio était coupé même avec un
+casque USB-C fonctionnel (anti-larsen : le haut-parleur est coupé pendant
+l'enregistrement *sauf* si un casque est détecté). Cause racine : **JUCE expose
+toujours `"Android Audio"`** comme nom de périphérique quel que soit le matériel
+physique branché — l'heuristique par chaîne (`engine::looksLikeHeadphones`) ne
+pouvait donc jamais matcher sur mobile.
+
+### Livré — détection casque
+- **`app/HeadphoneMonitor`** : sur Android, interroge directement
+  `AudioManager.getDevices(GET_DEVICES_OUTPUTS)` **via JNI** et cherche les types
+  matériels réels — `TYPE_WIRED_HEADSET(3)`, `TYPE_WIRED_HEADPHONES(4)`,
+  `TYPE_USB_HEADSET(8)`, `TYPE_USB_DEVICE(11)`, `TYPE_USB_ACCESSORY(12)`. Le
+  chemin desktop conserve l'heuristique `engine::looksLikeHeadphones` (USB /
+  headset / wired) sur le nom/type JUCE.
+- **Sondage au Timer** : `poll()` est appelé à chaque tick (10 Hz) en plus du
+  `ChangeListener`, car le hotplug USB-C n'est pas toujours notifié à
+  l'`AudioDeviceManager`. Le voyant passe au vert < 1 s après le branchement.
+- L'état est exposé via un `std::atomic<bool>` lu sans verrou dans
+  `getNextAudioBlock` (anti-larsen).
+
+### Livré — latence Android
+- **Buffer 256 frames** demandé sur Android après `setAudioChannels` pour engager
+  le chemin basse latence AAudio (~5 ms à 48 kHz), uniquement si le buffer par
+  défaut est plus grand (évite un redémarrage inutile du périphérique).
+- **Flags d'optimisation** : `.jucer` Release en `optimisation="3"` +
+  `cppFlags="-ffast-math -ftree-vectorize"` (c'est ce que l'APK utilise
+  réellement) ; blocs NEON/`-march=armv8-a` ajoutés dans `engine`/`dsp`
+  `CMakeLists.txt` pour le chemin de cross-compilation CMake-Android.
+
+### Durcissement JNI & audit mémoire
+- Audit fuites mémoire sur tout le dépôt : `core/`, `dsp/`, `engine/` et le GUI
+  sont **propres** (RAII, zéro allocation dans le callback audio, `Timer` arrêté
+  et `ChangeListener` retiré au destructeur, logger débranché). Le **seul** risque
+  était le code JNI nouvellement écrit.
+- Correctifs JNI : `clearPendingException()` après chaque `Call*Method` (tout
+  appel JNI avec une exception Java pendante est un comportement indéfini) et
+  `DeleteLocalRef` sur **toutes** les sorties (pas d'accumulation de références
+  locales si la boucle sur les périphériques lève).
+
+### Pièges rencontrés (à connaître)
+- **`.jucer` ≠ `CMakeLists.txt`** : un nouveau `app/src/*.cpp` doit être ajouté
+  **dans les deux** — `app/CMakeLists.txt` (desktop) **et** `VoiceLivePro.jucer`
+  (`grpApp`, build Android). Oublier le `.jucer` → erreur de **lien Android
+  uniquement** (`undefined symbol`), invisible sur desktop.
+- **`juce::getEnv()`** : déclaré dans un header natif interne de JUCE, non exposé
+  par les en-têtes publics. Forward-déclaré — mais **au scope global**, pas dans
+  `namespace voicelive::app` (sinon il crée un `voicelive::app::juce` qui masque
+  le vrai `::juce` et casse tout le fichier).
+- **`Rectangle::removeFromLeft`** est non-const : sur un `const Rectangle`, le NDK
+  (clang strict) refuse — utiliser `withWidth`/`withHeight`.
+
+### Durcissement CI (`.github/workflows/android.yml`)
+La vraie erreur clang/ninja était noyée dans ~150 lignes de stacktrace Gradle.
+Ajouté :
+- `tee` de la sortie Gradle dans `gradle-build.log` (pipefail conservé) ;
+- en cas d'échec, **extraction ciblée** des seuls signaux utiles
+  (`error:` / `FAILED:` / `undefined symbol` / `ninja stopped`) + queues des logs
+  `.cxx` ;
+- **artefact `android-debug-logs`** (log Gradle, logs `.cxx`, manifeste,
+  CMakeLists généré) téléchargeable sur échec ;
+- liste systématique des sources C++ référencées par le projet généré (détecte un
+  `.cpp` absent du `.jucer` avant le linker).
+
+### Vérifié
+- **CI (core)** : 8/8 verts (build, tests, ASan/UBSan, clang-tidy, clang-format).
+- **Android APK** : build complet vert, **APK publié** en artefact.
+- Détection casque/anti-larsen à confirmer sur appareil réel avec le nouvel APK.
+
+---
+
 ## 2026-06-16 — `core::Error` rendu RT-safe (caveat levé)
 
 ### Changement

@@ -7,9 +7,15 @@ add_library(voicelive_dsp
     src/EffectChain.cpp
     src/Chorus.cpp
     src/Wah.cpp
+    src/Distortion.cpp
+    src/NoiseGate.cpp
+    src/Tremolo.cpp
+    src/Phaser.cpp
+    src/Flanger.cpp
     src/PitchDetector.cpp
     src/Compressor.cpp
     src/Equalizer.cpp
+    src/BpmDetector.cpp
 )
 add_library(voicelive::dsp ALIAS voicelive_dsp)
 
@@ -21,6 +27,15 @@ target_compile_features(voicelive_dsp PUBLIC cxx_std_20)
 voicelive_set_target_warnings(voicelive_dsp)
 voicelive_enable_sanitizers(voicelive_dsp)
 
+# Android ARM optimizations (CMake cross-compilation path).
+if(ANDROID)
+    if(CMAKE_ANDROID_ARCH_ABI STREQUAL "armeabi-v7a")
+        target_compile_options(voicelive_dsp PRIVATE -mfpu=neon -mfloat-abi=softfp -ffast-math -ftree-vectorize)
+    elseif(CMAKE_ANDROID_ARCH_ABI STREQUAL "arm64-v8a")
+        target_compile_options(voicelive_dsp PRIVATE -march=armv8-a -ffast-math -ftree-vectorize)
+    endif()
+endif()
+
 if(VOICELIVE_BUILD_TESTS)
     add_executable(dsp_tests
         tests/test_main.cpp
@@ -29,9 +44,15 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_effect_chain.cpp
         tests/test_chorus.cpp
         tests/test_wah.cpp
+        tests/test_distortion.cpp
+        tests/test_noise_gate.cpp
+        tests/test_tremolo.cpp
+        tests/test_phaser.cpp
+        tests/test_flanger.cpp
         tests/test_pitch_detector.cpp
         tests/test_compressor.cpp
         tests/test_equalizer.cpp
+        tests/test_bpm_detector.cpp
     )
     target_link_libraries(dsp_tests PRIVATE voicelive::dsp voicelive::testing)
 
