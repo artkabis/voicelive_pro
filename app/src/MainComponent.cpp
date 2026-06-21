@@ -510,6 +510,19 @@ MainComponent::MainComponent() {
         contentPane_.addAndMakeVisible(zoomOutBtns_[i]);
     }
 
+    // Transport global : [▶ Toutes] [⏸] [⏹]
+    globalPlayBtn_.setButtonText(juce::CharPointer_UTF8("\xe2\x96\xb6 Toutes"));
+    globalPlayBtn_.onClick = [this] { playAllTracks(); };
+    contentPane_.addAndMakeVisible(globalPlayBtn_);
+
+    globalPauseBtn_.setButtonText(juce::CharPointer_UTF8("\xe2\x8f\xb8 Pause"));
+    globalPauseBtn_.onClick = [this] { pauseAllTracks(); };
+    contentPane_.addAndMakeVisible(globalPauseBtn_);
+
+    globalStopBtn_.setButtonText(juce::CharPointer_UTF8("\xe2\x8f\xb9 Stop"));
+    globalStopBtn_.onClick = [this] { stopAllTracks(); };
+    contentPane_.addAndMakeVisible(globalStopBtn_);
+
     // Transport
     metronomeButton_.setButtonText("Metronome");
     metronomeButton_.onClick = [this] {
@@ -1379,6 +1392,57 @@ void MainComponent::applyDeviceSelection() {
     }
 }
 
+// ─── Transport global ─────────────────────────────────────────────────────────
+
+void MainComponent::playAllTracks() {
+    // Strategie : arreter d'abord toutes les pistes actives, puis relancer tout.
+    // Toutes les commandes sont envoyees avant le prochain bloc audio -> elles
+    // sont toutes traitees dans le meme while(commands_.pop()) -> demarrage
+    // synchronise a la precision d'un bloc (~5 ms a 48 kHz / 256 samples).
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            const auto state = proc->track().state();
+            if (state == TrackState::Playing || state == TrackState::Overdubbing) {
+                postCommand(EngineCommand::Action::Stop, i, 1.0F, false);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            if (proc->track().hasContent() && proc->track().state() != TrackState::Recording) {
+                postCommand(EngineCommand::Action::Play, i, 1.0F, false);
+            }
+        }
+    }
+    juce::Logger::writeToLog("Transport global : Play toutes depuis le debut");
+}
+
+void MainComponent::pauseAllTracks() {
+    // Stop les pistes en lecture sans remettre le playhead a zero.
+    // (TrackProcessor::stop() ne touche pas playhead_, contrairement a play().)
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            if (proc->track().isPlaying()) {
+                postCommand(EngineCommand::Action::Stop, i, 1.0F, false);
+            }
+        }
+    }
+    juce::Logger::writeToLog("Transport global : Pause");
+}
+
+void MainComponent::stopAllTracks() {
+    for (std::size_t i = 0; i < kTrackCount; ++i) {
+        if (const auto* proc = engine_.track(i); proc != nullptr) {
+            const auto state = proc->track().state();
+            if (state == TrackState::Playing || state == TrackState::Overdubbing ||
+                state == TrackState::Stopped) {
+                postCommand(EngineCommand::Action::Stop, i, 1.0F, false);
+            }
+        }
+    }
+    juce::Logger::writeToLog("Transport global : Stop toutes");
+}
+
 void MainComponent::paint(juce::Graphics& g) {
     g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
 }
@@ -1393,6 +1457,7 @@ void MainComponent::resized() {
 
     constexpr int kTitleH = 34;
     constexpr int kTunerH = 34;
+    constexpr int kGlobalTransH = 44;  // rangee transport global [▶ Toutes][⏸][⏹]
     constexpr int kRowH = 44;
     constexpr int kWaveH = 60;
     constexpr int kFxRowH = 40;
@@ -1416,11 +1481,12 @@ void MainComponent::resized() {
     constexpr int kTrackH = kRowH + 6 + kRowH + 4 + kWaveH + 4 + kFxRowH + kFxRowH + kEditRowH;
 
     const int trackCount = static_cast<int>(kTrackCount);
-    const int totalH =
-        pad + kTitleH + kGap / 2 + kTunerH + kGap + trackCount * (kTrackH + kGap / 2) + kGap +
-        kTransH + kGap + kEqLblH + 4 + 3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 +
-        kEditRowH + 4 + kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
-        kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 + kDiagH + pad;
+    const int totalH = pad + kTitleH + kGap / 2 + kTunerH + kGap / 2 + kGlobalTransH + kGap +
+                       trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
+                       3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
+                       kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
+                       kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 +
+                       kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
@@ -1438,6 +1504,16 @@ void MainComponent::resized() {
         auto row = area.removeFromTop(kTunerH);
         tunerActiveButton_.setBounds(row.removeFromLeft(110).reduced(2));
         tunerLabel_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(kGap / 2);
+
+    // Transport global : [▶ Toutes] [⏸ Pause] [⏹ Stop]
+    {
+        auto row = area.removeFromTop(kGlobalTransH);
+        const int third = row.getWidth() / 3;
+        globalPlayBtn_.setBounds(row.removeFromLeft(third).reduced(2));
+        globalPauseBtn_.setBounds(row.removeFromLeft(third).reduced(2));
+        globalStopBtn_.setBounds(row.reduced(2));
     }
     area.removeFromTop(kGap);
 

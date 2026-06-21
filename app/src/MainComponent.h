@@ -149,6 +149,14 @@ private:
     void refreshDeviceList();     ///< met a jour les listes de peripheriques (sortie/entree)
     void applyDeviceSelection();  ///< applique le choix via setAudioDeviceSetup (routage Oboe)
 
+    // --- Transport global ---------------------------------------------------
+    /// Joue toutes les pistes ayant du contenu depuis le debut (synchronise).
+    void playAllTracks();
+    /// Met en pause toutes les pistes en cours de lecture (conserve le playhead).
+    void pauseAllTracks();
+    /// Arrete toutes les pistes ayant du contenu.
+    void stopAllTracks();
+
     // --- Edition de piste ----------------------------------------------------
     void cutSelection(std::size_t index);
     void trimToSelection(std::size_t index);
@@ -246,6 +254,10 @@ private:
 
     voicelive::dsp::BpmDetector bpmDetector_;
     void detectAndSyncBpm(std::size_t trackIndex);
+
+    juce::TextButton globalPlayBtn_;   ///< Joue toutes les pistes depuis le debut.
+    juce::TextButton globalPauseBtn_;  ///< Met en pause toutes les pistes.
+    juce::TextButton globalStopBtn_;   ///< Arrete toutes les pistes.
 
     juce::ToggleButton metronomeButton_;
     juce::Slider bpmSlider_;
