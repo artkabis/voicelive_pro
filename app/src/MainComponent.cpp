@@ -1235,6 +1235,7 @@ void MainComponent::timerCallback() {
             lastSeenBlocks_ = blocks;
             audioStaleTicks_ = 0;
             audioWasAlive_ = true;
+            watchdogRestartAttempts_ = 0;  // audio sain : on remet le compteur a zero
         } else {
             ++audioStaleTicks_;
         }
@@ -1245,10 +1246,14 @@ void MainComponent::timerCallback() {
         const bool engineReady = engine_.trackCount() == kTrackCount;
 
         // Cas 1 : audio vivant puis fige (2 s sans bloc).
+        // Limite a kMaxRestartAttempts relances consecutives. Au-dela, setAudioChannels()
+        // repart de zero (System Default) plutot que de reboucler sur une config cassee
+        // (ex. casque USB en sortie + micro integre en entree = split refuse par Oboe).
         if (audioWasAlive_ && deviceRunning && isShowing() && audioStaleTicks_ >= 20 &&
             restartCooldownTicks_ == 0) {
-            juce::Logger::writeToLog(
-                "Watchdog: audio fige (2s sans bloc), relance du peripherique");
+            ++watchdogRestartAttempts_;
+            constexpr int kMaxRestartAttempts = 3;
+
             if (anyTrackRecording_.load(std::memory_order_acquire)) {
                 for (std::size_t i = 0; i < kTrackCount; ++i) {
                     if (const auto* p = engine_.track(i);
@@ -1260,7 +1265,19 @@ void MainComponent::timerCallback() {
             }
             audioStaleTicks_ = 0;
             restartCooldownTicks_ = 50;
-            deviceManager.restartLastAudioDevice();
+
+            if (watchdogRestartAttempts_ <= kMaxRestartAttempts) {
+                juce::Logger::writeToLog(
+                    "Watchdog: audio fige (2s sans bloc), relance du peripherique (tentative " +
+                    juce::String(watchdogRestartAttempts_) + "/" +
+                    juce::String(kMaxRestartAttempts) + ")");
+                deviceManager.restartLastAudioDevice();
+            } else if (watchdogRestartAttempts_ == kMaxRestartAttempts + 1) {
+                juce::Logger::writeToLog(
+                    "Watchdog: " + juce::String(kMaxRestartAttempts) +
+                    " relances echouees, basculement sur peripherique par defaut");
+                setAudioChannels(2, 2);  // re-enumeration complete, ignore la config cassee
+            }
         }
 
         // Cas 2 : echec du demarrage initial (moteur non initialise apres 2 s).
@@ -1472,6 +1489,13 @@ void MainComponent::refreshDeviceList() {
         return;
     }
 
+    // Guard : desactive applyDeviceSelection() pendant le remplissage des combos.
+    // Meme avec dontSendNotification, certaines versions de JUCE peuvent declencher
+    // onChange lors d'un clear() → addItem() si le texte affiché change. Sans ce
+    // guard, applyDeviceSelection() forcerait une config split (sortie USB + entree
+    // integree) qui fait echouer Oboe avec "Failed to create audio session".
+    isRefreshingDeviceList_ = true;
+
     // Re-enumere la liste physique (necessaire au hotplug USB-C). En amont
     // OboeAudioIODeviceType::scanForDevices() est vide ; android.yml le patche pour
     // qu'il rebatisse la liste. Sur desktop / sans patch c'est un no-op inoffensif.
@@ -1508,9 +1532,15 @@ void MainComponent::refreshDeviceList() {
 
     fill(outputDeviceBox_, type->getDeviceNames(false), setup.outputDeviceName);
     fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
+    isRefreshingDeviceList_ = false;
 }
 
 void MainComponent::applyDeviceSelection() {
+    // Ignore les appels declenches par refreshDeviceList() (remplissage auto des combos).
+    // Seule une action explicite de l'utilisateur sur les combos doit changer le peripherique.
+    if (isRefreshingDeviceList_) {
+        return;
+    }
     if (deviceManager.getCurrentDeviceTypeObject() == nullptr) {
         return;
     }
