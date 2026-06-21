@@ -15,7 +15,7 @@ namespace {
 constexpr double kLowFreq = 120.0;
 constexpr double kMidFreq = 1000.0;
 constexpr double kHighFreq = 6000.0;
-constexpr double kMidQ = 0.9;
+constexpr double kMidQ = 0.9;  // Q du filtre peak médium : large (~1,5 octave), adapté au mix
 
 struct Coeffs {
     float b0;

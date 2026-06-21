@@ -26,6 +26,8 @@ float Compressor::smoothingCoefficient(float milliseconds) const noexcept {
 void Compressor::process(std::span<float> block) noexcept {
     const float attackCoeff = smoothingCoefficient(attackMs_);
     const float releaseCoeff = smoothingCoefficient(releaseMs_);
+    // kneeSlope : fraction de l'overshoot à réduire. ratio=∞ → 1 (limiting pur),
+    // ratio=1 → 0 (pas de compression). Formule standard gain-computer dB-domain.
     const float kneeSlope = 1.0F - (1.0F / ratio_);
 
     for (float& sample : block) {
