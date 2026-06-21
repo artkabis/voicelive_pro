@@ -1489,11 +1489,13 @@ void MainComponent::refreshDeviceList() {
         return;
     }
 
-    // Guard : desactive applyDeviceSelection() pendant le remplissage des combos.
-    // Meme avec dontSendNotification, certaines versions de JUCE peuvent declencher
-    // onChange lors d'un clear() → addItem() si le texte affiché change. Sans ce
-    // guard, applyDeviceSelection() forcerait une config split (sortie USB + entree
-    // integree) qui fait echouer Oboe avec "Failed to create audio session".
+    // Guard anti-split (config USB-sortie + micro-integre refusee par Oboe).
+    // JUCE 8 : ComboBox::setSelectedId() appelle triggerAsyncUpdate() meme avec
+    // dontSendNotification → handleAsyncUpdate() → onChange() fire en ASYNCHRONE
+    // sur la message queue, APRES que ce scope soit revenu. Un reset immediat du
+    // flag laisserait applyDeviceSelection() s'executer sans protection.
+    // Solution : reset via callAsync() (see end of function), qui se retrouve APRES
+    // handleAsyncUpdate() dans la queue → le flag reste vrai au bon moment.
     isRefreshingDeviceList_ = true;
 
     // Re-enumere la liste physique (necessaire au hotplug USB-C). En amont
@@ -1532,7 +1534,14 @@ void MainComponent::refreshDeviceList() {
 
     fill(outputDeviceBox_, type->getDeviceNames(false), setup.outputDeviceName);
     fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
-    isRefreshingDeviceList_ = false;
+
+    // Reset DIFFERE : JUCE 8's ComboBox::setSelectedId() appelle triggerAsyncUpdate()
+    // meme avec dontSendNotification, ce qui planifie handleAsyncUpdate() → onChange()
+    // dans la message queue. En postant le reset via callAsync(), on garantit l'ordre :
+    //   [handleAsyncUpdate] → [reset_flag]
+    // Ainsi, quand onChange() → applyDeviceSelection() s'execute, isRefreshingDeviceList_
+    // est encore true → retour immediat. Le reset ne s'effectue qu'apres.
+    juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
 }
 
 void MainComponent::applyDeviceSelection() {
