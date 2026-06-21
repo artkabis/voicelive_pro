@@ -1716,22 +1716,42 @@ void MainComponent::applySplitMicMode(int mode) {
         inputDeviceBox_.setText("Micro telephone (AudioRecord)", juce::dontSendNotification);
         refreshDeviceList();  // etablit "Micro telephone" comme item selectionne + guard
 
-        // Basculer JUCE sur le peripherique integre AVANT de demarrer AudioTrack.
-        // Ainsi Oboe n'ouvre jamais le casque USB, evitant Oboe:236 et Oboe:517.
-        // AudioTrack(STREAM_MUSIC) route vers le casque USB automatiquement via
-        // la politique de routage Android, sans selection explicite du peripherique.
-        {
+        // AudioTrack et AudioRecord sont lances en DIFFERE pour deux raisons :
+        // 1. Eviter Oboe:517 : AudioTrack doit demarrer APRES que JUCE/Oboe ait
+        //    quitte le casque USB. Demarrer AudioTrack pendant qu'Oboe occupe aussi
+        //    USB provoque un conflit HAL -> freeze immediat.
+        // 2. Eviter la reentrancee de la queue JUCE 8 : setAudioDeviceSetup() pompe
+        //    la queue pendant l'appel (timer refreshDeviceList, callAsync guards),
+        //    ce qui peut corrompre isRefreshingDeviceList_ avant la fin du bloc.
+        // Le callAsync garantit que tous les messages en file sont traites avant de
+        // toucher le peripherique.
+        juce::MessageManager::callAsync([this]() {
+            if (!splitMicMode_) return;
             auto* type = deviceManager.getCurrentDeviceTypeObject();
+            if (type == nullptr) return;
             const auto curSetup = deviceManager.getAudioDeviceSetup();
-            if (type != nullptr && curSetup.outputDeviceName.containsIgnoreCase("USB")) {
+            const bool onUsb = curSetup.outputDeviceName.containsIgnoreCase("USB") ||
+                               curSetup.outputDeviceName.containsIgnoreCase("Default");
+            bool juceOnBuiltIn = !onUsb;
+            if (onUsb) {
+                const auto outputNames = type->getDeviceNames(false);
+                juce::String allNames;
+                for (const auto& n : outputNames) allNames << "'" << n << "' ";
+                juce::Logger::writeToLog(
+                    "Mode split (defere): periph. sortie disponibles: " + allNames);
                 juce::String safeOut;
-                for (const auto& name : type->getDeviceNames(false)) {
-                    if (!name.containsIgnoreCase("USB") && !name.isEmpty()) {
+                for (const auto& name : outputNames) {
+                    if (!name.containsIgnoreCase("USB") &&
+                        !name.containsIgnoreCase("Default") && !name.isEmpty()) {
                         safeOut = name;
                         break;
                     }
                 }
-                if (safeOut.isNotEmpty()) {
+                if (safeOut.isEmpty()) {
+                    juce::Logger::writeToLog(
+                        "Mode split (defere): aucun peripherique integre disponible");
+                } else {
+                    isRefreshingDeviceList_ = true;
                     auto newSetup = curSetup;
                     newSetup.outputDeviceName = safeOut;
                     newSetup.inputDeviceName = safeOut;
@@ -1741,31 +1761,40 @@ void MainComponent::applySplitMicMode(int mode) {
                     newSetup.useDefaultOutputChannels = true;
                     const auto err = deviceManager.setAudioDeviceSetup(newSetup, true);
                     juce::Logger::writeToLog(
-                        "Mode split: JUCE -> peripherique integre '" + safeOut + "'" +
-                        (err.isNotEmpty() ? " ERREUR: " + err : ""));
+                        "Mode split (defere): JUCE -> '" + safeOut + "'" +
+                        (err.isNotEmpty() ? " ERREUR: " + err : " OK"));
+                    juceOnBuiltIn = err.isEmpty();
+                    juce::MessageManager::callAsync([this]() {
+                        isRefreshingDeviceList_ = false;
+                    });
                 }
             }
-        }
-
-        if (!androidAudioOutput_.isRunning()) {
-            if (androidAudioOutput_.start(static_cast<int>(sampleRate_))) {
+            if (!juceOnBuiltIn) {
                 juce::Logger::writeToLog(
-                    "AndroidAudioOutput: AudioTrack STREAM_MUSIC demarre " +
-                    juce::String(static_cast<int>(sampleRate_)) + " Hz (routage USB auto)");
-            } else {
-                juce::Logger::writeToLog("AndroidAudioOutput: demarrage echoue");
+                    "Mode split (defere): JUCE reste sur USB, arret pour eviter Oboe:517");
+                return;
             }
-        }
-        if (!micCapture_.isRunning()) {
-            if (micCapture_.start(static_cast<int>(sampleRate_))) {
-                juce::Logger::writeToLog("AndroidMicCapture: capture micro telephone " +
-                                         juce::String(static_cast<int>(sampleRate_)) + " Hz");
-            } else {
-                juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
+            if (!androidAudioOutput_.isRunning()) {
+                if (androidAudioOutput_.start(static_cast<int>(sampleRate_))) {
+                    juce::Logger::writeToLog(
+                        "AndroidAudioOutput: AudioTrack STREAM_MUSIC demarre " +
+                        juce::String(static_cast<int>(sampleRate_)) + " Hz (routage USB auto)");
+                } else {
+                    juce::Logger::writeToLog("AndroidAudioOutput: demarrage echoue");
+                }
             }
-        }
-        juce::Logger::writeToLog(
-            "Mode split: sortie AudioTrack(USB auto) + entree AudioRecord(micro integre)");
+            if (!micCapture_.isRunning()) {
+                if (micCapture_.start(static_cast<int>(sampleRate_))) {
+                    juce::Logger::writeToLog(
+                        "AndroidMicCapture: capture micro telephone " +
+                        juce::String(static_cast<int>(sampleRate_)) + " Hz");
+                } else {
+                    juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
+                }
+            }
+            juce::Logger::writeToLog(
+                "Mode split: sortie AudioTrack(USB auto) + entree AudioRecord(micro integre)");
+        });
     } else {
         androidAudioOutput_.stop();
         micCapture_.stop();
@@ -1810,14 +1839,15 @@ void MainComponent::applyDeviceSelection() {
             // le peripherique integre pour eviter qu'Oboe ne touche le casque USB
             // (source des freezes Oboe:236 et Oboe:517). outName est modifie pour que
             // setup.outputDeviceName pointe vers le peripherique integre.
-            if (outName.containsIgnoreCase("USB")) {
+            if (outName.containsIgnoreCase("USB") || outName.containsIgnoreCase("Default")) {
                 auto* type = deviceManager.getCurrentDeviceTypeObject();
                 if (type != nullptr) {
                     for (const auto& name : type->getDeviceNames(false)) {
-                        if (!name.containsIgnoreCase("USB") && !name.isEmpty()) {
+                        if (!name.containsIgnoreCase("USB") &&
+                            !name.containsIgnoreCase("Default") && !name.isEmpty()) {
                             juce::Logger::writeToLog(
-                                "applyDeviceSelection (split+AudioRecord): USB intercepte '" +
-                                outName + "' -> built-in '" + name + "' (sortie via AudioTrack)");
+                                "applyDeviceSelection (split+AudioRecord): USB/Default intercepte '"
+                                + outName + "' -> built-in '" + name + "' (sortie via AudioTrack)");
                             outName = name;
                             break;
                         }
@@ -1831,17 +1861,41 @@ void MainComponent::applyDeviceSelection() {
                 "applyDeviceSelection (split+AudioRecord): sortie -> '" + outName + "'");
         } else {
             // L'utilisateur a choisi une vraie entree JUCE en mode split.
-            // On arrete AudioRecord et on laisse JUCE gerer les deux directions.
+            // On arrete AudioRecord et AudioTrack, JUCE gere les deux directions.
             // Attention : cela peut echouer (cross-HAL) et geler le callback ;
             // le watchdog est actif dans ce sous-mode (micCapture_ non running).
             if (micCapture_.isRunning()) {
                 micCapture_.stop();
                 juce::Logger::writeToLog("applyDeviceSelection (split+JUCE input): arret AudioRecord");
             }
+            if (androidAudioOutput_.isRunning()) {
+                androidAudioOutput_.stop();
+                juce::Logger::writeToLog("applyDeviceSelection (split+JUCE input): arret AudioTrack");
+            }
             inName = inputDeviceBox_.getText();
             if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) return;
 
-            // Same-HAL pairing si l'entree choisie est le meme peripherique USB que la sortie.
+            // Eviter Oboe:517 : si la sortie est USB ou System Default (qui route vers
+            // USB), la rediriger vers le peripherique integre. Meme garde que le chemin
+            // AudioRecord pour eviter un conflit HAL.
+            if (outName.containsIgnoreCase("USB") || outName.containsIgnoreCase("Default")) {
+                auto* type = deviceManager.getCurrentDeviceTypeObject();
+                if (type != nullptr) {
+                    for (const auto& name : type->getDeviceNames(false)) {
+                        if (!name.containsIgnoreCase("USB") &&
+                            !name.containsIgnoreCase("Default") && !name.isEmpty()) {
+                            juce::Logger::writeToLog(
+                                "applyDeviceSelection (split+JUCE input): USB/Default intercepte '"
+                                + outName + "' -> built-in '" + name + "'");
+                            outName = name;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) return;
+
+            // Same-HAL pairing si l'entree choisie est le meme peripherique que la sortie.
             {
                 auto* type = deviceManager.getCurrentDeviceTypeObject();
                 const juce::StringArray inputNames = type->getDeviceNames(true);
