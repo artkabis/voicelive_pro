@@ -1593,15 +1593,17 @@ void MainComponent::applyDeviceSelection() {
     // Android/Oboe refuse la config "split" (sortie USB + entree differente).
     // Le HyperX Cloud III USB (type 22) expose egalement un micro USB ; si le meme
     // nom apparait dans la liste d'entrees, on l'utilise pour eviter le split.
-    if (outName != setup.outputDeviceName) {
+    // NOTE : on ne conditionne PAS ce bloc a "outName != setup.outputDeviceName".
+    // Cas concerne : sortie deja USB, inchangee, mais refreshDeviceList() a remplace
+    // l'entree par le nom resolu du system default (ex. "SM-A266B built-in microphone").
+    // Sans ce garde, l'invariant ci-dessus laisserait passer la config split.
+    {
         auto* type = deviceManager.getCurrentDeviceTypeObject();
         const juce::StringArray inputNames = type->getDeviceNames(true);
-        if (inputNames.contains(outName)) {
-            juce::Logger::writeToLog("applyDeviceSelection: pairing entree USB '" + outName + "'");
+        if (inputNames.contains(outName) && inName != outName) {
+            juce::Logger::writeToLog("applyDeviceSelection: pairing entree USB '" + outName +
+                                     "' (etait: '" + inName + "')");
             inName = outName;
-            // setText sans notification : l'onChange eventuel rechecke l'invariant
-            // ci-dessus et sort immediatement (outName==setup.out, inName==setup.in
-            // apres setAudioDeviceSetup reussi, ou les combos = actual apres echec).
             inputDeviceBox_.setText(inName, juce::dontSendNotification);
         }
     }
