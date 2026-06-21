@@ -321,6 +321,20 @@ void MainComponent::TrackWaveform::clearSelection() noexcept {
     repaint();
 }
 
+void MainComponent::TrackWaveform::zoomBy(float factor) noexcept {
+    // Zoom centre sur le milieu de la fenetre visible.
+    const float center = (viewStart_ + viewEnd_) * 0.5F;
+    const float oldSpan = viewEnd_ - viewStart_;
+    const float newSpan = juce::jlimit(0.02F, 1.0F, oldSpan / juce::jmax(1e-3F, factor));
+    viewStart_ = juce::jlimit(0.0F, 1.0F - newSpan, center - newSpan * 0.5F);
+    viewEnd_ = juce::jlimit(viewStart_ + 0.02F, 1.0F, viewStart_ + newSpan);
+    if (newSpan > 0.97F) {
+        viewStart_ = 0.0F;
+        viewEnd_ = 1.0F;
+    }
+    repaint();
+}
+
 // ─── SpectrumView ─────────────────────────────────────────────────────────────
 
 void MainComponent::SpectrumView::update(std::span<const float> analysis) {
@@ -486,6 +500,14 @@ MainComponent::MainComponent() {
         includeBtns_[i].setButtonText("MIX");
         includeBtns_[i].setToggleState(true, juce::dontSendNotification);
         contentPane_.addAndMakeVisible(includeBtns_[i]);
+
+        zoomInBtns_[i].setButtonText("+");
+        zoomInBtns_[i].onClick = [this, i] { waveforms_[i].zoomBy(3.0F); };
+        contentPane_.addAndMakeVisible(zoomInBtns_[i]);
+
+        zoomOutBtns_[i].setButtonText("-");
+        zoomOutBtns_[i].onClick = [this, i] { waveforms_[i].zoomBy(1.0F / 3.0F); };
+        contentPane_.addAndMakeVisible(zoomOutBtns_[i]);
     }
 
     // Transport
@@ -1444,8 +1466,16 @@ void MainComponent::resized() {
 
         trackArea.removeFromTop(4);
 
-        // Waveform (avec selection interactive)
-        waveforms_[i].setBounds(trackArea.removeFromTop(kWaveH));
+        // Waveform (avec selection interactive) + boutons zoom [+][-] superposes
+        {
+            const auto waveArea = trackArea.removeFromTop(kWaveH);
+            waveforms_[i].setBounds(waveArea);
+            // Boutons superposes en haut a droite : [−][+], 28 x 20 px chacun.
+            constexpr int kZW = 28;
+            constexpr int kZH = 20;
+            zoomInBtns_[i].setBounds(waveArea.getRight() - kZW, waveArea.getY(), kZW, kZH);
+            zoomOutBtns_[i].setBounds(waveArea.getRight() - kZW * 2 - 2, waveArea.getY(), kZW, kZH);
+        }
 
         trackArea.removeFromTop(4);
 

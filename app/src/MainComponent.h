@@ -84,6 +84,9 @@ private:
         /// Appelee a chaque double-clic avec la position normalisee [0,1] dans la boucle.
         std::function<void(float normPos)> onSeek;
 
+        /// Zoom programmatique : factor > 1 = avant, < 1 = arriere, centre sur la vue.
+        void zoomBy(float factor) noexcept;
+
     private:
         /// Convertit une position pixel [0,w] en position normalisee [0,1] dans la boucle.
         [[nodiscard]] float pixelToNorm(float px) const noexcept;
@@ -238,6 +241,8 @@ private:
     std::array<juce::TextButton, kTrackCount> exportTrackBtns_;
     std::array<juce::ToggleButton, kTrackCount> includeBtns_;  ///< Include track in mix export.
     std::array<juce::TextButton, kTrackCount> bpmSyncBtns_;
+    std::array<juce::TextButton, kTrackCount> zoomInBtns_;   ///< Zoom avant sur la waveform.
+    std::array<juce::TextButton, kTrackCount> zoomOutBtns_;  ///< Zoom arriere / reset.
 
     voicelive::dsp::BpmDetector bpmDetector_;
     void detectAndSyncBpm(std::size_t trackIndex);
