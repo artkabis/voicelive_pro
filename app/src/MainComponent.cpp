@@ -1290,8 +1290,12 @@ void MainComponent::timerCallback() {
         // Limite a kMaxRestartAttempts relances consecutives. Au-dela, setAudioChannels()
         // repart de zero (System Default) plutot que de reboucler sur une config cassee
         // (ex. casque USB en sortie + micro integre en entree = split refuse par Oboe).
+        // En mode split, on NE relance JAMAIS le peripherique : restartLastAudioDevice()
+        // et le fallback setAudioChannels(2,2) detruisent la config split (l'output se
+        // remet par defaut, l'entree casque est rouverte). Si le duplex se fige en split,
+        // l'utilisateur peut basculer le mode micro off/on pour reinitialiser proprement.
         if (audioWasAlive_ && deviceRunning && isShowing() && audioStaleTicks_ >= 20 &&
-            restartCooldownTicks_ == 0) {
+            restartCooldownTicks_ == 0 && !splitMicMode_) {
             ++watchdogRestartAttempts_;
             constexpr int kMaxRestartAttempts = 3;
 
@@ -1329,7 +1333,7 @@ void MainComponent::timerCallback() {
         // peripheriques depuis zero et peut ouvrir un flux sur le bon appareil.
         // Limite a kMaxStartupAttempts pour eviter le spam d'assertions.
         if (!audioWasAlive_ && !engineReady && isShowing() && audioStaleTicks_ >= 20 &&
-            restartCooldownTicks_ == 0) {
+            restartCooldownTicks_ == 0 && !splitMicMode_) {
             ++watchdogStartupAttempts_;
             constexpr int kMaxStartupAttempts = 3;
             if (watchdogStartupAttempts_ <= kMaxStartupAttempts) {
@@ -1620,36 +1624,39 @@ void MainComponent::applySplitMicMode(int mode) {
 
     if (wantSplit) {
         splitMicMode_ = true;
-        // 0 canal d'entree : JUCE/Oboe n'ouvre qu'un stream de SORTIE vers le casque USB.
-        // AndroidMicCapture ouvrira AudioRecord sur le micro integre independamment.
-        // prepareToPlay() sera rappele par JUCE et demarrera micCapture_.
+        // On NE passe PAS en sortie seule (setAudioChannels(2,0)) : sur cet appareil
+        // Oboe n'arrive pas a maintenir un flux output-only (jassert :484, callback
+        // gele -> aucune lecture du FIFO -> drops massifs). On garde donc JUCE en
+        // DUPLEX (2,2) sur le chemin deja eprouve (sortie casque OK en mode normal),
+        // et on capture le micro TELEPHONE en parallele via AudioRecord. L'entree
+        // JUCE (micro du casque) est simplement ignoree dans getNextAudioBlock.
+        // On ne touche pas au peripherique courant : la selection de sortie est
+        // preservee (et le watchdog est neutralise en split, cf. timerCallback).
         inputDeviceBox_.setEnabled(false);
-        inputDeviceBox_.setText("Micro integre (mode split)", juce::dontSendNotification);
-        setAudioChannels(2, 0);
-        // Fallback si prepareToPlay n'a pas encore ete appele (JUCE peut etre async).
+        inputDeviceBox_.setText("Micro telephone (AudioRecord)", juce::dontSendNotification);
         if (!micCapture_.isRunning()) {
             if (micCapture_.start(static_cast<int>(sampleRate_))) {
-                juce::Logger::writeToLog(
-                    "AndroidMicCapture: capture micro telephone " +
-                    juce::String(static_cast<int>(sampleRate_)) + " Hz");
+                juce::Logger::writeToLog("AndroidMicCapture: capture micro telephone " +
+                                         juce::String(static_cast<int>(sampleRate_)) + " Hz");
             } else {
                 juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
             }
         }
-        juce::Logger::writeToLog("Mode split: sortie USB + micro telephone actif");
+        juce::Logger::writeToLog("Mode split: sortie casque + micro telephone (duplex + AudioRecord)");
     } else {
         micCapture_.stop();
         splitMicMode_ = false;
         inputDeviceBox_.setEnabled(true);
-        setAudioChannels(2, 2);
+        // JUCE est deja en duplex : rien a reconfigurer. On rafraichit juste la liste.
         refreshDeviceList();
         juce::Logger::writeToLog("Mode split: desactive, retour entree JUCE normale");
     }
 }
 
 void MainComponent::applyDeviceSelection() {
-    // En mode split, JUCE est configure en sortie seule (setAudioChannels(2,0)).
-    // Ne pas tenter de changer la config d'entree JUCE — c'est AudioRecord qui s'en charge.
+    // En mode split, l'entree effective vient d'AudioRecord (micro telephone) ; on
+    // ne touche pas a la config de peripherique JUCE (qui reste en duplex). L'entree
+    // JUCE est ignoree dans getNextAudioBlock.
     if (splitMicMode_) return;
 
     // Bloque les appels automatiques depuis refreshDeviceList() (JUCE 8 enqueue un
