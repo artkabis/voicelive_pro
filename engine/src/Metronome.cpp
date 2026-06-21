@@ -52,8 +52,9 @@ void Metronome::advanceBeat(double samplesPerBeat, long beatsPerBar) noexcept {
     }
     beatPhase_ += 1.0;
     if (beatPhase_ >= samplesPerBeat) {
-        beatPhase_ -= samplesPerBeat;
+        beatPhase_ -= samplesPerBeat;  // accumulation exacte : pas de drift cumulatif
         ++beatCount_;
+        // L'accent tombe sur le 1er temps de chaque mesure (beatCount_ % beatsPerBar == 0).
         triggerClick((beatCount_ % beatsPerBar) == 0);
     }
 }

@@ -91,8 +91,11 @@ core::Result<AudioData> decode(const FormatChunk& fmt, const Bytes& data, std::s
         const std::size_t offset = dataOffset + (i * bytesPerSample);
         if (isPcm16) {
             const auto raw = static_cast<std::int16_t>(readU16(data, offset));
+            // Division par 32768 (et non 32767) : convention WAV standard ; évite
+            // un dépassement de +1.0 sur le sample positif maximum (0x7FFF = 0,99997).
             result.samples.push_back(static_cast<float>(raw) / 32768.0F);
         } else {
+            // IEEE 754 float32 : lecture brute sans conversion numérique.
             result.samples.push_back(std::bit_cast<float>(readU32(data, offset)));
         }
     }
@@ -129,7 +132,9 @@ core::Result<AudioData> parse(const Bytes& data) {
             haveData = true;
         }
 
-        offset = body + chunkSize + (chunkSize & 1U);  // les chunks sont alignés sur 2 octets
+        // Le standard RIFF aligne chaque chunk sur 2 octets : si chunkSize est impair,
+        // un octet de padding est inséré (non compté dans chunkSize).
+        offset = body + chunkSize + (chunkSize & 1U);
     }
 
     if (!haveFmt || !haveData) {

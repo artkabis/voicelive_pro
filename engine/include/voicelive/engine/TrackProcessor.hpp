@@ -54,6 +54,8 @@ public:
 
     /// Charge un contenu mono dans la piste et la met en lecture (import WAV).
     /// Hors temps réel (peut écrire dans le buffer pré-alloué).
+    /// Les transitions record/finishRecording sont appelées directement (hors
+    /// callback) : les Status ignorés ne peuvent échouer depuis Empty.
     void loadContent(std::span<const float> samples) noexcept {
         clearTrack();
         audio_.append(samples);
