@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-#include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -15,19 +15,19 @@ TEST(SampleFifo, vide_au_depart) {
     SampleFifo<8> fifo;
     CHECK(fifo.available() == 0U);
     CHECK(fifo.capacity() == 7U);  // une case reservee plein/vide
-    float dst[4] = {1, 2, 3, 4};
-    CHECK(fifo.read(dst, 4) == 0U);  // rien a lire
+    std::array<float, 4> dst{1.0F, 2.0F, 3.0F, 4.0F};
+    CHECK(fifo.read(dst.data(), 4) == 0U);  // rien a lire
 }
 
 TEST(SampleFifo, ecrit_puis_lit_fifo) {
     SampleFifo<8> fifo;
-    const float src[5] = {1.0F, 2.0F, 3.0F, 4.0F, 5.0F};
-    CHECK(fifo.write(src, 5) == 5U);
+    const std::array<float, 5> src{1.0F, 2.0F, 3.0F, 4.0F, 5.0F};
+    CHECK(fifo.write(src.data(), 5) == 5U);
     CHECK(fifo.available() == 5U);
 
-    float dst[5] = {};
-    CHECK(fifo.read(dst, 5) == 5U);
-    for (int i = 0; i < 5; ++i) {
+    std::array<float, 5> dst{};
+    CHECK(fifo.read(dst.data(), 5) == 5U);
+    for (std::size_t i = 0; i < src.size(); ++i) {
         CHECK(dst[i] == src[i]);
     }
     CHECK(fifo.available() == 0U);
@@ -35,12 +35,12 @@ TEST(SampleFifo, ecrit_puis_lit_fifo) {
 
 TEST(SampleFifo, lecture_partielle_quand_sous_rempli) {
     SampleFifo<8> fifo;
-    const float src[3] = {10.0F, 20.0F, 30.0F};
-    fifo.write(src, 3);
+    const std::array<float, 3> src{10.0F, 20.0F, 30.0F};
+    fifo.write(src.data(), 3);
 
-    float dst[6] = {};
-    const std::size_t got = fifo.read(dst, 6);  // demande 6, seulement 3 dispo
-    CHECK(got == 3U);                           // l'appelant comblerait par du silence
+    std::array<float, 6> dst{};
+    const std::size_t got = fifo.read(dst.data(), 6);  // demande 6, seulement 3 dispo
+    CHECK(got == 3U);                                  // l'appelant comblerait par du silence
     CHECK(dst[0] == 10.0F);
     CHECK(dst[2] == 30.0F);
 }
@@ -48,8 +48,8 @@ TEST(SampleFifo, lecture_partielle_quand_sous_rempli) {
 TEST(SampleFifo, ecriture_partielle_quand_plein) {
     SampleFifo<8> fifo;  // capacite utile = 7
     std::vector<float> src(10);
-    for (int i = 0; i < 10; ++i) {
-        src[static_cast<std::size_t>(i)] = static_cast<float>(i);
+    for (std::size_t i = 0; i < src.size(); ++i) {
+        src[i] = static_cast<float>(i);
     }
     const std::size_t written = fifo.write(src.data(), 10);
     CHECK(written == 7U);  // seulement 7 cases ; l'appelant decide drop vs retry
@@ -62,14 +62,14 @@ TEST(SampleFifo, wraparound_preserve_l_ordre) {
     float expect = 0.0F;
     // Boucle longue : force le passage de l'index au-dela de Capacity plusieurs fois.
     for (int iter = 0; iter < 100; ++iter) {
-        float src[3] = {next, next + 1.0F, next + 2.0F};
+        const std::array<float, 3> src{next, next + 1.0F, next + 2.0F};
         next += 3.0F;
-        REQUIRE(fifo.write(src, 3) == 3U);
+        REQUIRE(fifo.write(src.data(), 3) == 3U);
 
-        float dst[3] = {};
-        REQUIRE(fifo.read(dst, 3) == 3U);
-        for (int i = 0; i < 3; ++i) {
-            CHECK(dst[i] == expect);
+        std::array<float, 3> dst{};
+        REQUIRE(fifo.read(dst.data(), 3) == 3U);
+        for (const float sample : dst) {
+            CHECK(sample == expect);
             expect += 1.0F;
         }
     }
@@ -78,23 +78,23 @@ TEST(SampleFifo, wraparound_preserve_l_ordre) {
 
 TEST(SampleFifo, reset_vide_la_file) {
     SampleFifo<8> fifo;
-    const float src[4] = {1.0F, 2.0F, 3.0F, 4.0F};
-    fifo.write(src, 4);
+    const std::array<float, 4> src{1.0F, 2.0F, 3.0F, 4.0F};
+    fifo.write(src.data(), 4);
     CHECK(fifo.available() == 4U);
 
     fifo.reset();
     CHECK(fifo.available() == 0U);
-    float dst[4];
-    CHECK(fifo.read(dst, 4) == 0U);
+    std::array<float, 4> dst{};
+    CHECK(fifo.read(dst.data(), 4) == 0U);
 }
 
 // Politique cote appelant : drop a l'over-run (producteur ne reessaie pas).
-// Reproduit le comportement de AndroidMicCapture::pushSamples.
+// Reproduit le comportement de AndroidMicCapture::captureLoop.
 TEST(SampleFifo, politique_drop_sur_overrun) {
     SampleFifo<8> fifo;  // capacite utile = 7
     std::uint64_t dropped = 0;
-    const float src[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
-    const std::size_t w = fifo.write(src, 10);
+    const std::array<float, 10> src{0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    const std::size_t w = fifo.write(src.data(), 10);
     dropped += 10 - w;  // l'appelant comptabilise lui-meme la perte
     CHECK(w == 7U);
     CHECK(dropped == 3U);
@@ -113,7 +113,7 @@ TEST(SampleFifo, stress_concurrent_spsc) {
 
     std::thread producer([&] {
         std::uint64_t produced = 0;
-        float block[64];
+        std::array<float, 64> block{};
         while (produced < kTotal) {
             const std::size_t batch =
                 static_cast<std::size_t>(std::min<std::uint64_t>(64, kTotal - produced));
@@ -122,7 +122,7 @@ TEST(SampleFifo, stress_concurrent_spsc) {
             }
             std::size_t off = 0;
             while (off < batch) {
-                off += fifo.write(block + off, batch - off);  // reessaie si plein
+                off += fifo.write(block.data() + off, batch - off);  // reessaie si plein
             }
             produced += batch;
         }
@@ -131,11 +131,11 @@ TEST(SampleFifo, stress_concurrent_spsc) {
 
     std::uint64_t consumed = 0;
     bool ordreOk = true;
-    float dst[128];
+    std::array<float, 128> dst{};
     while (consumed < kTotal) {
-        const std::size_t got = fifo.read(dst, 128);
+        const std::size_t got = fifo.read(dst.data(), 128);
         for (std::size_t i = 0; i < got; ++i) {
-            const float expected = static_cast<float>((consumed + i) & 0xFFFFFF);
+            const auto expected = static_cast<float>((consumed + i) & 0xFFFFFF);
             if (dst[i] != expected) {
                 ordreOk = false;
             }
