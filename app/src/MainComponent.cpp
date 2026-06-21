@@ -1422,7 +1422,8 @@ void MainComponent::pauseAllTracks() {
     // (TrackProcessor::stop() ne touche pas playhead_, contrairement a play().)
     for (std::size_t i = 0; i < kTrackCount; ++i) {
         if (const auto* proc = engine_.track(i); proc != nullptr) {
-            if (proc->track().isPlaying()) {
+            const auto state = proc->track().state();
+            if (state == TrackState::Playing || state == TrackState::Overdubbing) {
                 postCommand(EngineCommand::Action::Stop, i, 1.0F, false);
             }
         }
