@@ -2,9 +2,10 @@
 #pragma once
 
 #include <atomic>
-#include <array>
 #include <cstdint>
 #include <thread>
+
+#include "voicelive/engine/SampleFifo.hpp"
 
 #if JUCE_ANDROID
 #include <jni.h>
@@ -22,9 +23,16 @@ namespace voicelive::app {
 //               physique du telephone, meme quand un casque USB est branche)
 //
 // Threading :
-//   Producteur = thread de capture (background thread natif attache a la JVM)
+//   Producteur   = thread de capture (background natif attache a la JVM)
 //   Consommateur = thread audio JUCE (getNextAudioBlock)
-//   Communication : ring buffer SPSC lock-free.
+//   Communication: SampleFifo (file SPSC lock-free, transfert par blocs).
+//
+// Politique de perte (assuree ICI, pas par le FIFO) :
+//   - over-run  : si le FIFO est plein, le producteur ABANDONNE les echantillons
+//     en trop (il ne peut pas bloquer le thread de capture) et incremente
+//     droppedSamples(). Cela arrive si le consommateur est en retard.
+//   - under-run : si le FIFO est vide, le consommateur recoit moins que demande,
+//     complete par du silence et incremente underrunSamples().
 class AndroidMicCapture {
 public:
     AndroidMicCapture() = default;
@@ -35,41 +43,49 @@ public:
 
     // Demarre la capture. Appele depuis le thread message (jamais le thread audio).
     // sampleRate doit correspondre a la frequence de sortie JUCE courante.
-    // Retourne false en cas d'echec (permission refusee, API non supportee, etc.)
+    // Idempotent : un second appel sans stop() prealable est ignore (retourne true).
+    // Retourne false en cas d'echec (sampleRate invalide, permission refusee, API KO).
     bool start(int sampleRate) noexcept;
 
     // Arrete la capture et libere AudioRecord. Thread message uniquement.
+    // Idempotent : sans capture active, ne fait rien.
     void stop() noexcept;
 
     [[nodiscard]] bool isRunning() const noexcept {
         return running_.load(std::memory_order_acquire);
     }
 
-    // Lit jusqu'a `count` echantillons float depuis le ring buffer.
+    // Lit jusqu'a `count` echantillons float depuis le FIFO.
     // Appele UNIQUEMENT depuis getNextAudioBlock (thread audio temps reel, lock-free).
-    // Retourne le nombre d'echantillons effectivement lus (peut etre < count si sous-remplissage).
+    // Retourne le nombre lu (< count en sous-remplissage) ; l'appelant complete par
+    // du silence. L'under-run est comptabilise pour diagnostic.
     int readSamples(float* dst, int count) noexcept;
 
-private:
-    // Ring buffer SPSC audio. Taille puissance de 2 pour masquage d'index (pas de modulo).
-    // 16384 floats @ 48 kHz = ~341 ms de tampon — largement suffisant pour absorber
-    // les variations de timing entre le thread de capture et le thread audio.
-    static constexpr std::size_t kRingSize = 16384;
-    static_assert((kRingSize & (kRingSize - 1)) == 0, "kRingSize doit etre puissance de 2");
+    // Compteurs de diagnostic (cumules, lisibles depuis n'importe quel thread).
+    [[nodiscard]] std::uint64_t droppedSamples() const noexcept {
+        return dropped_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] std::uint64_t underrunSamples() const noexcept {
+        return underrun_.load(std::memory_order_relaxed);
+    }
 
-    std::array<float, kRingSize> ring_{};
-    std::atomic<uint32_t> ringWrite_{0};  // ecrit par le thread de capture
-    std::atomic<uint32_t> ringRead_{0};   // ecrit par le thread audio
+private:
+    // FIFO SPSC audio. 16384 floats @ 48 kHz = ~341 ms de tampon — large marge
+    // pour absorber le jitter d'ordonnancement entre capture et thread audio.
+    static constexpr std::size_t kFifoCapacity = 16384;
+    voicelive::engine::SampleFifo<kFifoCapacity> fifo_;
+
+    std::atomic<std::uint64_t> dropped_{0};   // over-run cumule (producteur)
+    std::atomic<std::uint64_t> underrun_{0};  // under-run cumule (consommateur)
 
     std::atomic<bool> running_{false};
     std::thread captureThread_;
 
 #if JUCE_ANDROID
-    jobject audioRecord_{nullptr};  // reference globale JNI (valide entre Start et stop)
+    jobject audioRecord_{nullptr};  // reference globale JNI (valide entre start et stop)
     JavaVM* jvm_{nullptr};
 
     void captureLoop() noexcept;
-    void pushSamples(const float* src, int count) noexcept;
 #endif
 };
 

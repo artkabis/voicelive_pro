@@ -62,3 +62,32 @@ rien — c'est ce qui le rend compilable en WASM et testable sans matériel audi
 2. Aucun verrou bloquant dans le callback (structures lock-free).
 3. Aucune I/O (fichier, log, réseau) dans le callback.
 4. États invalides non représentables (cf. `LooperTrack`, types forts).
+
+## 6. Audio Android : mode bidirectionnel vs mode split (HAL)
+
+Sur Android, JUCE pilote **Oboe**, qui ouvre une **session audio unique** liée à
+**un seul HAL** matériel. Conséquence : on ne peut pas mélanger, dans la même
+session, une **sortie** sur un HAL (casque USB) et une **entrée** sur un autre
+HAL (micro intégré). Toute tentative de configuration « split » est rejetée
+(`jassert juce_Oboe_android.cpp:517`, « Failed to create audio session »).
+
+Deux modes sont donc exposés :
+
+- **Mode apparié (par défaut)** — JUCE gère entrée + sortie sur le **même**
+  périphérique (`setAudioChannels(2, 2)`). Le casque USB (in/out) ou le
+  téléphone (micro + HP) fonctionnent ; un mélange est refusé par Oboe. Le
+  sélecteur de périphériques apparie automatiquement la sortie USB à l'entrée
+  USB (`applyDeviceSelection`).
+
+- **Mode split** — sortie casque USB **+** micro intégré du téléphone. JUCE
+  n'ouvre qu'un flux de **sortie** (`setAudioChannels(2, 0)`) ; l'entrée est
+  capturée **en parallèle** par `app/src/AndroidMicCapture` via
+  `android.media.AudioRecord` (JNI). C'est une API **indépendante d'Oboe** :
+  deux HALs, deux sessions, aucun conflit. Le transfert capture → callback audio
+  passe par `engine::SampleFifo` (SPSC lock-free). Cas d'usage : écouter une
+  piste dans le casque sans la repisser dans la nouvelle prise micro.
+
+Les contrats §5 restent respectés en mode split : le `SampleFifo` est lock-free
+(contrat 2) et le callback audio ne fait que des `memcpy` bornés sans allocation
+ni I/O (contrats 1 et 3) ; la capture `AudioRecord` (JNI, blocante) tourne sur
+un **thread dédié**, jamais dans le callback.

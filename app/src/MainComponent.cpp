@@ -1482,6 +1482,17 @@ void MainComponent::updateDiagnostics() {
     text << "Micro (crete) : " << juce::String(micLevel, 4)
          << (micLevel < 1e-4F ? "  [SILENCE - micro inactif ?]" : "  [signal OK]") << "\n";
 
+    // Mode split : etat de la capture micro telephone independante (AudioRecord).
+    // drop = consommateur en retard (FIFO plein) ; underrun = producteur en retard
+    // (FIFO vide -> silence). Des valeurs qui grimpent en continu signalent un
+    // probleme de cadence ; quelques unites au demarrage sont normales.
+    if (splitMicMode_) {
+        text << "Mode split : sortie USB + micro telephone (AudioRecord) - "
+             << (micCapture_.isRunning() ? "ACTIF" : "ARRETE") << "\n";
+        text << "  Capture micro : drop=" << juce::String(micCapture_.droppedSamples())
+             << "  underrun=" << juce::String(micCapture_.underrunSamples()) << "\n";
+    }
+
     const auto diag = engine_.diagnostics();
     text << "Moteur : " << static_cast<int>(diag.trackCount) << " pistes, "
          << static_cast<int>(diag.blocksProcessed) << " blocs, "

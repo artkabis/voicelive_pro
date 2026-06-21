@@ -3,62 +3,42 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cstring>
+#include <cstddef>
 #include <thread>
 
 #if JUCE_ANDROID
 #include <android/log.h>
 #define VLMIC_TAG "VoiceLiveMic"
-#define VLMIC_I(...) __android_log_print(ANDROID_LOG_INFO,  VLMIC_TAG, __VA_ARGS__)
+#define VLMIC_I(...) __android_log_print(ANDROID_LOG_INFO, VLMIC_TAG, __VA_ARGS__)
 #define VLMIC_E(...) __android_log_print(ANDROID_LOG_ERROR, VLMIC_TAG, __VA_ARGS__)
 
 // getEnv() est fourni par JUCE pour le thread courant (declare en liaison externe).
-namespace juce { JNIEnv* getEnv() noexcept; }
+namespace juce {
+JNIEnv* getEnv() noexcept;
+}
 #endif
 
 namespace voicelive::app {
 
-// ─── Ring buffer (compile sur toutes les plateformes) ────────────────────────
+// ─── Consommateur (thread audio) : compile sur toutes les plateformes ────────
 
 int AndroidMicCapture::readSamples(float* dst, int count) noexcept {
-    const uint32_t r = ringRead_.load(std::memory_order_relaxed);
-    const uint32_t w = ringWrite_.load(std::memory_order_acquire);
-    const int avail = static_cast<int>((w - r) & static_cast<uint32_t>(kRingSize - 1));
-    const int n = std::min(count, avail);
-    if (n <= 0) return 0;
-
-    const uint32_t rMask = r & static_cast<uint32_t>(kRingSize - 1);
-    const int first = std::min(n, static_cast<int>(kRingSize - rMask));
-    std::memcpy(dst, ring_.data() + rMask, static_cast<std::size_t>(first) * sizeof(float));
-    if (first < n) {
-        std::memcpy(dst + first, ring_.data(),
-                    static_cast<std::size_t>(n - first) * sizeof(float));
+    if (count <= 0) {
+        return 0;
     }
-    ringRead_.store(r + static_cast<uint32_t>(n), std::memory_order_release);
-    return n;
+    const std::size_t got = fifo_.read(dst, static_cast<std::size_t>(count));
+    // Under-run : on a demande plus que disponible. L'appelant comblera par du
+    // silence ; on comptabilise pour le diagnostic (producteur en retard / arrete).
+    if (got < static_cast<std::size_t>(count)) {
+        underrun_.fetch_add(static_cast<std::uint64_t>(static_cast<std::size_t>(count) - got),
+                            std::memory_order_relaxed);
+    }
+    return static_cast<int>(got);
 }
 
 // ─── Implementation Android ──────────────────────────────────────────────────
 
 #if JUCE_ANDROID
-
-void AndroidMicCapture::pushSamples(const float* src, int count) noexcept {
-    const uint32_t w = ringWrite_.load(std::memory_order_relaxed);
-    const uint32_t r = ringRead_.load(std::memory_order_acquire);
-    const int space =
-        static_cast<int>((kRingSize - 1) - ((w - r) & static_cast<uint32_t>(kRingSize - 1)));
-    const int n = std::min(count, space);
-    if (n <= 0) return;  // ring plein : echantillons droppes (rare si tampon bien dimensionne)
-
-    const uint32_t wMask = w & static_cast<uint32_t>(kRingSize - 1);
-    const int first = std::min(n, static_cast<int>(kRingSize - wMask));
-    std::memcpy(ring_.data() + wMask, src, static_cast<std::size_t>(first) * sizeof(float));
-    if (first < n) {
-        std::memcpy(ring_.data(), src + first,
-                    static_cast<std::size_t>(n - first) * sizeof(float));
-    }
-    ringWrite_.store(w + static_cast<uint32_t>(n), std::memory_order_release);
-}
 
 void AndroidMicCapture::captureLoop() noexcept {
     JNIEnv* env = nullptr;
@@ -86,7 +66,6 @@ void AndroidMicCapture::captureLoop() noexcept {
     }
 
     // Tampon de lecture JNI : 512 floats (~10 ms @ 48 kHz).
-    // READ_NON_BLOCKING pour ne pas bloquer le thread de capture.
     constexpr int kReadBlock = 512;
     jfloatArray jBuf = env->NewFloatArray(static_cast<jsize>(kReadBlock));
     if (jBuf == nullptr) {
@@ -100,11 +79,18 @@ void AndroidMicCapture::captureLoop() noexcept {
     float nativeBuf[kReadBlock];
 
     while (running_.load(std::memory_order_acquire)) {
-        const jint n = env->CallIntMethod(audioRecord_, readMethod,
-                                          jBuf, (jint)0, (jint)kReadBlock, kReadNonBlocking);
+        const jint n = env->CallIntMethod(audioRecord_, readMethod, jBuf, (jint)0, (jint)kReadBlock,
+                                          kReadNonBlocking);
         if (n > 0) {
             env->GetFloatArrayRegion(jBuf, 0, static_cast<jsize>(n), nativeBuf);
-            pushSamples(nativeBuf, static_cast<int>(n));
+            // Politique drop : le thread de capture ne peut pas bloquer ; si le
+            // FIFO est plein (consommateur en retard), on abandonne le surplus.
+            const std::size_t want = static_cast<std::size_t>(n);
+            const std::size_t wrote = fifo_.write(nativeBuf, want);
+            if (wrote < want) {
+                dropped_.fetch_add(static_cast<std::uint64_t>(want - wrote),
+                                   std::memory_order_relaxed);
+            }
         } else {
             // Aucun echantillon disponible : pause courte pour eviter le busy-wait.
             std::this_thread::sleep_for(std::chrono::microseconds(500));
@@ -116,7 +102,14 @@ void AndroidMicCapture::captureLoop() noexcept {
 }
 
 bool AndroidMicCapture::start(int sampleRate) noexcept {
-    if (running_.load(std::memory_order_acquire)) return true;
+    // Idempotent + anti double-start : eviter d'orpheliner un thread de capture.
+    if (running_.load(std::memory_order_acquire) || captureThread_.joinable()) {
+        return true;
+    }
+    if (sampleRate < 4000 || sampleRate > 192000) {
+        VLMIC_E("start: sampleRate invalide (%d)", sampleRate);
+        return false;
+    }
 
     JNIEnv* env = juce::getEnv();
     if (env == nullptr) {
@@ -135,19 +128,17 @@ bool AndroidMicCapture::start(int sampleRate) noexcept {
     }
 
     // AudioRecord.getMinBufferSize(sampleRate, CHANNEL_IN_MONO=16, ENCODING_PCM_FLOAT=4)
-    jmethodID minBufId =
-        env->GetStaticMethodID(arClass, "getMinBufferSize", "(III)I");
+    jmethodID minBufId = env->GetStaticMethodID(arClass, "getMinBufferSize", "(III)I");
     if (minBufId == nullptr) {
         VLMIC_E("start: getMinBufferSize introuvable");
         env->DeleteLocalRef(arClass);
         return false;
     }
-    constexpr jint kChannelInMono   = 16;
+    constexpr jint kChannelInMono = 16;
     constexpr jint kEncodingPcmFloat = 4;
-    const jint minBuf = env->CallStaticIntMethod(arClass, minBufId,
-                                                  (jint)sampleRate,
-                                                  kChannelInMono,
-                                                  kEncodingPcmFloat);
+    const jint minBuf =
+        env->CallStaticIntMethod(arClass, minBufId, (jint)sampleRate, kChannelInMono,
+                                 kEncodingPcmFloat);
     if (minBuf <= 0) {
         VLMIC_E("start: getMinBufferSize=%d (sampleRate=%d non supporte?)", (int)minBuf, sampleRate);
         env->DeleteLocalRef(arClass);
@@ -163,17 +154,15 @@ bool AndroidMicCapture::start(int sampleRate) noexcept {
         return false;
     }
     constexpr jint kAudioSourceMic = 1;  // MediaRecorder.AudioSource.MIC
-    jobject localAr = env->NewObject(arClass, ctor,
-                                      kAudioSourceMic,
-                                      (jint)sampleRate,
-                                      kChannelInMono,
-                                      kEncodingPcmFloat,
-                                      bufSize);
+    jobject localAr = env->NewObject(arClass, ctor, kAudioSourceMic, (jint)sampleRate,
+                                     kChannelInMono, kEncodingPcmFloat, bufSize);
     env->DeleteLocalRef(arClass);
     if (localAr == nullptr || env->ExceptionCheck()) {
         env->ExceptionClear();
         VLMIC_E("start: new AudioRecord() echec");
-        if (localAr != nullptr) env->DeleteLocalRef(localAr);
+        if (localAr != nullptr) {
+            env->DeleteLocalRef(localAr);
+        }
         return false;
     }
 
@@ -220,9 +209,10 @@ bool AndroidMicCapture::start(int sampleRate) noexcept {
         }
     }
 
-    // Reset du ring buffer avant de demarrer le thread producteur.
-    ringWrite_.store(0, std::memory_order_relaxed);
-    ringRead_.store(0, std::memory_order_relaxed);
+    // Vider le FIFO et les compteurs avant de demarrer le thread producteur.
+    fifo_.reset();
+    dropped_.store(0, std::memory_order_relaxed);
+    underrun_.store(0, std::memory_order_relaxed);
 
     running_.store(true, std::memory_order_release);
     captureThread_ = std::thread([this]() { captureLoop(); });
@@ -232,30 +222,42 @@ bool AndroidMicCapture::start(int sampleRate) noexcept {
 }
 
 void AndroidMicCapture::stop() noexcept {
-    if (!running_.load(std::memory_order_acquire)) return;
+    // Idempotent, mais on doit toujours joindre un thread eventuellement lance
+    // meme si running_ a deja ete remis a false par un echec interne du captureLoop.
     running_.store(false, std::memory_order_release);
-
-    if (captureThread_.joinable()) captureThread_.join();
+    if (captureThread_.joinable()) {
+        captureThread_.join();
+    }
 
     JNIEnv* env = juce::getEnv();
     if (env != nullptr && audioRecord_ != nullptr) {
         jclass cls = env->GetObjectClass(audioRecord_);
-        jmethodID stopM    = env->GetMethodID(cls, "stop",    "()V");
+        jmethodID stopM = env->GetMethodID(cls, "stop", "()V");
         jmethodID releaseM = env->GetMethodID(cls, "release", "()V");
         env->DeleteLocalRef(cls);
-        if (stopM    != nullptr) { env->CallVoidMethod(audioRecord_, stopM);    env->ExceptionClear(); }
-        if (releaseM != nullptr) { env->CallVoidMethod(audioRecord_, releaseM); env->ExceptionClear(); }
+        if (stopM != nullptr) {
+            env->CallVoidMethod(audioRecord_, stopM);
+            env->ExceptionClear();
+        }
+        if (releaseM != nullptr) {
+            env->CallVoidMethod(audioRecord_, releaseM);
+            env->ExceptionClear();
+        }
         env->DeleteGlobalRef(audioRecord_);
         audioRecord_ = nullptr;
     }
 
-    VLMIC_I("stop: AudioRecord arrete");
+    if (audioRecord_ == nullptr) {
+        VLMIC_I("stop: AudioRecord arrete (drop=%llu underrun=%llu)",
+                (unsigned long long)dropped_.load(std::memory_order_relaxed),
+                (unsigned long long)underrun_.load(std::memory_order_relaxed));
+    }
 }
 
 #else  // ─── Stubs non-Android ─────────────────────────────────────────────────
 
-bool AndroidMicCapture::start(int) noexcept  { return false; }
-void AndroidMicCapture::stop()  noexcept {}
+bool AndroidMicCapture::start(int) noexcept { return false; }
+void AndroidMicCapture::stop() noexcept {}
 
 #endif
 
