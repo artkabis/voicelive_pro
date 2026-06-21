@@ -186,3 +186,4 @@ build-app/
 
 # Artefacts de test générés (écrits dans le CWD)
 vlpro_*
+build_check/
