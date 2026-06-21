@@ -27,6 +27,7 @@
 #include <span>
 #include <vector>
 
+#include "AndroidAudioOutput.hpp"
 #include "AndroidMicCapture.hpp"
 #include "HeadphoneMonitor.h"
 #include "voicelive/dsp/BpmDetector.hpp"
@@ -209,6 +210,7 @@ private:
     voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possede par masterChain_
 
     voicelive::app::AndroidMicCapture micCapture_;
+    voicelive::app::AndroidAudioOutput androidAudioOutput_;
     bool splitMicMode_{false};
 
     voicelive::app::HeadphoneMonitor headphoneMonitor_;

@@ -17,7 +17,8 @@ target_sources(VoiceLiveApp PRIVATE
     src/Main.cpp
     src/MainComponent.cpp
     src/HeadphoneMonitor.cpp
-    src/AndroidMicCapture.cpp)
+    src/AndroidMicCapture.cpp
+    src/AndroidAudioOutput.cpp)
 
 target_compile_features(VoiceLiveApp PRIVATE cxx_std_20)
 
