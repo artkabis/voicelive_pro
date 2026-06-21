@@ -1119,17 +1119,21 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
         }
         mixTransport_.prepareToPlay(static_cast<int>(engineBlock), sampleRate);
 
-        // En mode split, redemarrer la capture micro telephone avec la nouvelle frequence.
-        // prepareToPlay est rappele a chaque changement de peripherique (branchement casque,
-        // relance watchdog…) : on resynchronise AudioRecord pour eviter un mismatch de sampleRate.
+        // En mode split, re-synchroniser AudioRecord si (et seulement si) il tournait
+        // avant le changement de peripherique. Si l'utilisateur avait choisi une entree
+        // JUCE (AudioRecord arrete), on ne le relance PAS : cela evite un conflit HAL
+        // (AudioRecord + JUCE tentant d'ouvrir le meme micro) et l'assertion Oboe:517.
         if (splitMicMode_) {
+            const bool wasRunning = micCapture_.isRunning();
             micCapture_.stop();
-            if (micCapture_.start(static_cast<int>(sampleRate))) {
-                juce::Logger::writeToLog(
-                    "AndroidMicCapture: capture micro telephone " +
-                    juce::String(static_cast<int>(sampleRate)) + " Hz");
-            } else {
-                juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
+            if (wasRunning) {
+                if (micCapture_.start(static_cast<int>(sampleRate))) {
+                    juce::Logger::writeToLog(
+                        "AndroidMicCapture: capture micro telephone " +
+                        juce::String(static_cast<int>(sampleRate)) + " Hz");
+                } else {
+                    juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
+                }
             }
         }
     } catch (const std::exception& e) {
@@ -1667,13 +1671,20 @@ void MainComponent::applySplitMicMode(int mode) {
         // et on capture le micro TELEPHONE en parallele via AudioRecord. L'entree
         // JUCE (micro du casque) est simplement ignoree dans getNextAudioBlock.
         // On ne touche pas au peripherique courant : la selection de sortie est
-        // preservee (et le watchdog est neutralise en split, cf. timerCallback).
+        // preservee (et le watchdog est neutralise en split+AudioRecord, cf. timerCallback).
         //
-        // La combo entree RESTE ACTIVEE : l'utilisateur peut voir et choisir sa source
-        // d'entree. Par defaut on pre-selectionne "Micro telephone (AudioRecord)" ;
-        // refreshDeviceList() peuplera la liste complete au prochain tick.
+        // La combo entree RESTE ACTIVEE : l'utilisateur peut voir et choisir sa source.
+        // On appelle refreshDeviceList() IMMEDIATEMENT pour deux raisons :
+        //   1. Ajouter "Micro telephone (AudioRecord)" comme item valide (selectedId=1)
+        //      avant que les handleAsyncUpdate() JUCE 8 en attente ne restaurent le texte
+        //      vers le dernier peripherique JUCE selectionne.
+        //   2. Activer isRefreshingDeviceList_ pour bloquer tout onChange async entrant.
+        // Sans ce refresh immediat, un onChange de la combo en file d'attente peut voir
+        // le mauvais texte, appeler applyDeviceSelection(split+JUCE input) et arreter
+        // AudioRecord dans la seconde qui suit l'activation du mode split.
         inputDeviceBox_.setEnabled(true);
         inputDeviceBox_.setText("Micro telephone (AudioRecord)", juce::dontSendNotification);
+        refreshDeviceList();  // etablit "Micro telephone" comme item selectionne + guard
         if (!micCapture_.isRunning()) {
             if (micCapture_.start(static_cast<int>(sampleRate_))) {
                 juce::Logger::writeToLog("AndroidMicCapture: capture micro telephone " +
