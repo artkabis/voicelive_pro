@@ -38,6 +38,16 @@
             file="dsp/src/Chorus.cpp"/>
       <FILE id="dspWah" name="Wah.cpp" compile="1" resource="0"
             file="dsp/src/Wah.cpp"/>
+      <FILE id="dspDist" name="Distortion.cpp" compile="1" resource="0"
+            file="dsp/src/Distortion.cpp"/>
+      <FILE id="dspGate" name="NoiseGate.cpp" compile="1" resource="0"
+            file="dsp/src/NoiseGate.cpp"/>
+      <FILE id="dspTrem" name="Tremolo.cpp" compile="1" resource="0"
+            file="dsp/src/Tremolo.cpp"/>
+      <FILE id="dspPhaser" name="Phaser.cpp" compile="1" resource="0"
+            file="dsp/src/Phaser.cpp"/>
+      <FILE id="dspFlanger" name="Flanger.cpp" compile="1" resource="0"
+            file="dsp/src/Flanger.cpp"/>
       <FILE id="dspPitch" name="PitchDetector.cpp" compile="1" resource="0"
             file="dsp/src/PitchDetector.cpp"/>
       <FILE id="dspComp" name="Compressor.cpp" compile="1" resource="0"

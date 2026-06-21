@@ -7,6 +7,11 @@ add_library(voicelive_dsp
     src/EffectChain.cpp
     src/Chorus.cpp
     src/Wah.cpp
+    src/Distortion.cpp
+    src/NoiseGate.cpp
+    src/Tremolo.cpp
+    src/Phaser.cpp
+    src/Flanger.cpp
     src/PitchDetector.cpp
     src/Compressor.cpp
     src/Equalizer.cpp
@@ -39,6 +44,11 @@ if(VOICELIVE_BUILD_TESTS)
         tests/test_effect_chain.cpp
         tests/test_chorus.cpp
         tests/test_wah.cpp
+        tests/test_distortion.cpp
+        tests/test_noise_gate.cpp
+        tests/test_tremolo.cpp
+        tests/test_phaser.cpp
+        tests/test_flanger.cpp
         tests/test_pitch_detector.cpp
         tests/test_compressor.cpp
         tests/test_equalizer.cpp
