@@ -136,11 +136,11 @@ bool AndroidMicCapture::start(int sampleRate) noexcept {
     }
     constexpr jint kChannelInMono = 16;
     constexpr jint kEncodingPcmFloat = 4;
-    const jint minBuf =
-        env->CallStaticIntMethod(arClass, minBufId, (jint)sampleRate, kChannelInMono,
-                                 kEncodingPcmFloat);
+    const jint minBuf = env->CallStaticIntMethod(arClass, minBufId, (jint)sampleRate,
+                                                 kChannelInMono, kEncodingPcmFloat);
     if (minBuf <= 0) {
-        VLMIC_E("start: getMinBufferSize=%d (sampleRate=%d non supporte?)", (int)minBuf, sampleRate);
+        VLMIC_E("start: getMinBufferSize=%d (sampleRate=%d non supporte?)", (int)minBuf,
+                sampleRate);
         env->DeleteLocalRef(arClass);
         return false;
     }
@@ -256,7 +256,9 @@ void AndroidMicCapture::stop() noexcept {
 
 #else  // ─── Stubs non-Android ─────────────────────────────────────────────────
 
-bool AndroidMicCapture::start(int) noexcept { return false; }
+bool AndroidMicCapture::start(int) noexcept {
+    return false;
+}
 void AndroidMicCapture::stop() noexcept {}
 
 #endif

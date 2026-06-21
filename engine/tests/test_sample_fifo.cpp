@@ -1,6 +1,4 @@
 // SPDX-License-Identifier: MIT
-#include "voicelive/engine/SampleFifo.hpp"
-
 #include <algorithm>
 #include <atomic>
 #include <cstddef>
@@ -8,6 +6,7 @@
 #include <thread>
 #include <vector>
 
+#include "voicelive/engine/SampleFifo.hpp"
 #include "voicelive_testing/testing.hpp"
 
 using voicelive::engine::SampleFifo;
@@ -41,7 +40,7 @@ TEST(SampleFifo, lecture_partielle_quand_sous_rempli) {
 
     float dst[6] = {};
     const std::size_t got = fifo.read(dst, 6);  // demande 6, seulement 3 dispo
-    CHECK(got == 3U);                            // l'appelant comblerait par du silence
+    CHECK(got == 3U);                           // l'appelant comblerait par du silence
     CHECK(dst[0] == 10.0F);
     CHECK(dst[2] == 30.0F);
 }

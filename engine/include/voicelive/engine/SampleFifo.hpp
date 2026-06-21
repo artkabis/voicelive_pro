@@ -37,8 +37,7 @@ namespace voicelive::engine {
 
 template <std::size_t Capacity>
 class SampleFifo {
-    static_assert((Capacity & (Capacity - 1)) == 0,
-                  "Capacity doit etre une puissance de deux");
+    static_assert((Capacity & (Capacity - 1)) == 0, "Capacity doit etre une puissance de deux");
     static_assert(Capacity >= 2, "Capacity doit valoir au moins 2");
 
 public:
