@@ -27,6 +27,7 @@
 #include <span>
 #include <vector>
 
+#include "AndroidMicCapture.hpp"
 #include "HeadphoneMonitor.h"
 #include "voicelive/dsp/BpmDetector.hpp"
 #include "voicelive/dsp/Chorus.hpp"
@@ -164,6 +165,7 @@ private:
     void updateDiagnostics();
     void refreshDeviceList();     ///< met a jour les listes de peripheriques (sortie/entree)
     void applyDeviceSelection();  ///< applique le choix via setAudioDeviceSetup (routage Oboe)
+    void applySplitMicMode(int mode);  ///< 1=normal, 2=split (USB sortie + micro telephone)
 
     // --- Transport global ---------------------------------------------------
     /// Joue toutes les pistes ayant du contenu depuis le debut (synchronise).
@@ -205,6 +207,9 @@ private:
 
     voicelive::engine::LooperEngine engine_;
     voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possede par masterChain_
+
+    voicelive::app::AndroidMicCapture micCapture_;
+    bool splitMicMode_{false};
 
     voicelive::app::HeadphoneMonitor headphoneMonitor_;
     voicelive::app::HeadphoneLed headphoneLed_;
@@ -309,8 +314,10 @@ private:
     juce::Label audioDevLabel_;
     juce::Label outputDevLabel_;
     juce::Label inputDevLabel_;
+    juce::Label micModeLabel_;
     juce::ComboBox outputDeviceBox_;
     juce::ComboBox inputDeviceBox_;
+    juce::ComboBox micModeBox_;
 
     juce::Label ioLabel_;
     juce::TextButton saveProjectBtn_;

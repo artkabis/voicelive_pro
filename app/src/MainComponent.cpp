@@ -667,6 +667,16 @@ MainComponent::MainComponent() {
     inputDeviceBox_.onChange = [this] { applyDeviceSelection(); };
     contentPane_.addAndMakeVisible(inputDeviceBox_);
 
+    // Mode d'entree micro : appariage JUCE normal vs mode split (micro telephone independant).
+    micModeLabel_.setText("Mode micro", juce::dontSendNotification);
+    micModeLabel_.setJustificationType(juce::Justification::centredLeft);
+    contentPane_.addAndMakeVisible(micModeLabel_);
+    micModeBox_.addItem("Micro apparie (meme peripherique)", 1);
+    micModeBox_.addItem("Micro telephone (mode split)", 2);
+    micModeBox_.setSelectedId(1, juce::dontSendNotification);
+    micModeBox_.onChange = [this] { applySplitMicMode(micModeBox_.getSelectedId()); };
+    contentPane_.addAndMakeVisible(micModeBox_);
+
     // I/O section
     ioLabel_.setText("Projet", juce::dontSendNotification);
     ioLabel_.setFont(juce::Font(juce::FontOptions{}.withHeight(16.0F)));
@@ -731,6 +741,7 @@ MainComponent::~MainComponent() {
     stopTimer();
     deviceManager.removeChangeListener(this);
     headphoneMonitor_.detach(deviceManager);  // avant shutdownAudio pour eviter callbacks tardifs
+    micCapture_.stop();                        // avant shutdownAudio : le thread audio doit etre vivant
     shutdownAudio();
     juce::Logger::setCurrentLogger(nullptr);
 }
@@ -1107,6 +1118,20 @@ void MainComponent::prepareToPlay(int samplesPerBlockExpected, double sampleRate
             juce::Logger::writeToLog("Mix transport reconnecte apres reprise peripherique");
         }
         mixTransport_.prepareToPlay(static_cast<int>(engineBlock), sampleRate);
+
+        // En mode split, redemarrer la capture micro telephone avec la nouvelle frequence.
+        // prepareToPlay est rappele a chaque changement de peripherique (branchement casque,
+        // relance watchdog…) : on resynchronise AudioRecord pour eviter un mismatch de sampleRate.
+        if (splitMicMode_) {
+            micCapture_.stop();
+            if (micCapture_.start(static_cast<int>(sampleRate))) {
+                juce::Logger::writeToLog(
+                    "AndroidMicCapture: capture micro telephone " +
+                    juce::String(static_cast<int>(sampleRate)) + " Hz");
+            } else {
+                juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
+            }
+        }
     } catch (const std::exception& e) {
         juce::Logger::writeToLog(juce::String("ERREUR prepareToPlay: ") + e.what());
     } catch (...) {
@@ -1145,7 +1170,17 @@ void MainComponent::getNextAudioBlock(const juce::AudioSourceChannelInfo& buffer
 
     const std::span<float> monoIn{monoIn_.data(), numSamples};
     const std::span<float> monoOut{monoOut_.data(), numSamples};
-    channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
+
+    // Mode split : entree depuis AndroidMicCapture (ring buffer), pas depuis JUCE/Oboe.
+    // JUCE est configure avec 0 canal d'entree (setAudioChannels(2,0)) ; le buffer
+    // ne contient que les canaux de sortie — inputPtrs pointerait sur des donnees non-audio.
+    if (splitMicMode_ && micCapture_.isRunning()) {
+        const int got = micCapture_.readSamples(monoIn_.data(), static_cast<int>(numSamples));
+        if (got < static_cast<int>(numSamples))
+            std::fill(monoIn_.data() + got, monoIn_.data() + numSamples, 0.0F);
+    } else {
+        channels::downmixToMono(monoIn, inputPtrs.data(), static_cast<std::size_t>(numChannels));
+    }
 
     // Diagnostic bon marche : crete d'entree + taille de bloc, pour confirmer sur
     // l'appareil que le micro capture bien (niveau > 0 pendant l'enregistrement).
@@ -1568,7 +1603,44 @@ void MainComponent::refreshDeviceList() {
     }
 }
 
+void MainComponent::applySplitMicMode(int mode) {
+    const bool wantSplit = (mode == 2);
+    if (wantSplit == splitMicMode_) return;
+
+    if (wantSplit) {
+        splitMicMode_ = true;
+        // 0 canal d'entree : JUCE/Oboe n'ouvre qu'un stream de SORTIE vers le casque USB.
+        // AndroidMicCapture ouvrira AudioRecord sur le micro integre independamment.
+        // prepareToPlay() sera rappele par JUCE et demarrera micCapture_.
+        inputDeviceBox_.setEnabled(false);
+        inputDeviceBox_.setText("Micro integre (mode split)", juce::dontSendNotification);
+        setAudioChannels(2, 0);
+        // Fallback si prepareToPlay n'a pas encore ete appele (JUCE peut etre async).
+        if (!micCapture_.isRunning()) {
+            if (micCapture_.start(static_cast<int>(sampleRate_))) {
+                juce::Logger::writeToLog(
+                    "AndroidMicCapture: capture micro telephone " +
+                    juce::String(static_cast<int>(sampleRate_)) + " Hz");
+            } else {
+                juce::Logger::writeToLog("AndroidMicCapture: demarrage echoue");
+            }
+        }
+        juce::Logger::writeToLog("Mode split: sortie USB + micro telephone actif");
+    } else {
+        micCapture_.stop();
+        splitMicMode_ = false;
+        inputDeviceBox_.setEnabled(true);
+        setAudioChannels(2, 2);
+        refreshDeviceList();
+        juce::Logger::writeToLog("Mode split: desactive, retour entree JUCE normale");
+    }
+}
+
 void MainComponent::applyDeviceSelection() {
+    // En mode split, JUCE est configure en sortie seule (setAudioChannels(2,0)).
+    // Ne pas tenter de changer la config d'entree JUCE — c'est AudioRecord qui s'en charge.
+    if (splitMicMode_) return;
+
     // Bloque les appels automatiques depuis refreshDeviceList() (JUCE 8 enqueue un
     // handleAsyncUpdate() meme avec dontSendNotification ; le guard reste actif
     // jusqu'apres ce callback grace au reset defere via callAsync).
@@ -1736,8 +1808,8 @@ void MainComponent::resized() {
                        trackCount * (kTrackH + kGap / 2) + kGap + kTransH + kGap + kEqLblH + 4 +
                        3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
                        kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
-                       kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH + kGap / 2 +
-                       kDiagH + pad;
+                       kAudioRowH + 4 + kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap +
+                       kCopyH + kGap / 2 + kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
@@ -1933,7 +2005,7 @@ void MainComponent::resized() {
         exportMixBtn_.setBounds(editRow.reduced(2));
     }
 
-    // Peripheriques audio section : [label] / [Sortie | combo] / [Entree | combo]
+    // Peripheriques audio section : [label] / [Sortie | combo] / [Entree | combo] / [Mode micro | combo]
     area.removeFromTop(kGap);
     audioDevLabel_.setBounds(area.removeFromTop(kAudioLblH));
     area.removeFromTop(4);
@@ -1947,6 +2019,12 @@ void MainComponent::resized() {
         auto row = area.removeFromTop(kAudioRowH);
         inputDevLabel_.setBounds(row.removeFromLeft(70));
         inputDeviceBox_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kAudioRowH);
+        micModeLabel_.setBounds(row.removeFromLeft(70));
+        micModeBox_.setBounds(row.reduced(2));
     }
 
     // Projet section

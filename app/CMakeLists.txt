@@ -16,7 +16,8 @@ juce_add_gui_app(VoiceLiveApp
 target_sources(VoiceLiveApp PRIVATE
     src/Main.cpp
     src/MainComponent.cpp
-    src/HeadphoneMonitor.cpp)
+    src/HeadphoneMonitor.cpp
+    src/AndroidMicCapture.cpp)
 
 target_compile_features(VoiceLiveApp PRIVATE cxx_std_20)
 
