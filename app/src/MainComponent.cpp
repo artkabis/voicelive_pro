@@ -1206,7 +1206,13 @@ void MainComponent::changeListenerCallback(juce::ChangeBroadcaster* source) {
     // pour le hotplug. On n'appelle pas non plus restartLastAudioDevice() car
     // engine_.prepare() efface toutes les pistes enregistrees.
     if (dynamic_cast<juce::AudioDeviceManager*>(source) != nullptr) {
-        juce::Logger::writeToLog("Changement peripherique audio (USB-C / BT ?)");
+        const auto setup = deviceManager.getAudioDeviceSetup();
+        const auto* dev = deviceManager.getCurrentAudioDevice();
+        juce::Logger::writeToLog(
+            "Changement peripherique audio : sortie='" + setup.outputDeviceName +
+            "' entree='" + setup.inputDeviceName + "'" +
+            (dev != nullptr ? " [ouvert]" : " [ferme]") +
+            " refresh_guard=" + juce::String(isRefreshingDeviceList_ ? "1" : "0"));
     }
 }
 
@@ -1532,6 +1538,9 @@ void MainComponent::refreshDeviceList() {
         }
     };
 
+    const juce::String outBefore = outputDeviceBox_.getText();
+    const juce::String inBefore = inputDeviceBox_.getText();
+
     fill(outputDeviceBox_, type->getDeviceNames(false), setup.outputDeviceName);
     fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
 
@@ -1541,13 +1550,30 @@ void MainComponent::refreshDeviceList() {
     //   [handleAsyncUpdate] → [reset_flag]
     // Ainsi, quand onChange() → applyDeviceSelection() s'execute, isRefreshingDeviceList_
     // est encore true → retour immediat. Le reset ne s'effectue qu'apres.
-    juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
+    //
+    // MAIS : si fill() n'a rien change (combos deja a jour), il n'y a PAS de
+    // triggerAsyncUpdate() en queue. Un callAsync() inconditionnnel poserait un
+    // reset_flag ORPHELIN qui pourrait preceder le triggerAsyncUpdate d'un futur
+    // fill(), rendant le guard inoperant. On ne differe que si fill a modifie au
+    // moins un combo (detection via getText() avant/apres).
+    const juce::String outAfter = outputDeviceBox_.getText();
+    const juce::String inAfter = inputDeviceBox_.getText();
+    if (outAfter != outBefore || inAfter != inBefore) {
+        // Un ou deux combos ont change → triggerAsyncUpdate() a ete enqueue.
+        // Le reset doit passer apres lui dans la queue.
+        juce::MessageManager::callAsync([this]() { isRefreshingDeviceList_ = false; });
+    } else {
+        // Aucun changement → pas de triggerAsyncUpdate() → reset immediat sur.
+        isRefreshingDeviceList_ = false;
+    }
 }
 
 void MainComponent::applyDeviceSelection() {
-    // Ignore les appels declenches par refreshDeviceList() (remplissage auto des combos).
-    // Seule une action explicite de l'utilisateur sur les combos doit changer le peripherique.
+    // Bloque les appels automatiques depuis refreshDeviceList() (JUCE 8 enqueue un
+    // handleAsyncUpdate() meme avec dontSendNotification ; le guard reste actif
+    // jusqu'apres ce callback grace au reset defere via callAsync).
     if (isRefreshingDeviceList_) {
+        juce::Logger::writeToLog("applyDeviceSelection: bloquee (refresh auto)");
         return;
     }
     if (deviceManager.getCurrentDeviceTypeObject() == nullptr) {
@@ -1556,29 +1582,60 @@ void MainComponent::applyDeviceSelection() {
 
     auto setup = deviceManager.getAudioDeviceSetup();
     const juce::String outName = outputDeviceBox_.getText();
-    const juce::String inName = inputDeviceBox_.getText();
+    juce::String inName = inputDeviceBox_.getText();
 
-    // Pas de changement reel : on sort (evite la reentrance via changeListenerCallback
-    // -> refreshDeviceList qui pourrait re-declencher onChange).
+    // Invariant : si les combos refletent deja l'etat JUCE, il n'y a rien a faire.
+    // Ce check arrete aussi les re-entrees (onChange declenche par les setText ci-dessous).
+    if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
+        return;
+    }
+
+    // Android/Oboe refuse la config "split" (sortie USB + entree differente).
+    // Le HyperX Cloud III USB (type 22) expose egalement un micro USB ; si le meme
+    // nom apparait dans la liste d'entrees, on l'utilise pour eviter le split.
+    if (outName != setup.outputDeviceName) {
+        auto* type = deviceManager.getCurrentDeviceTypeObject();
+        const juce::StringArray inputNames = type->getDeviceNames(true);
+        if (inputNames.contains(outName)) {
+            juce::Logger::writeToLog("applyDeviceSelection: pairing entree USB '" + outName + "'");
+            inName = outName;
+            // setText sans notification : l'onChange eventuel rechecke l'invariant
+            // ci-dessus et sort immediatement (outName==setup.out, inName==setup.in
+            // apres setAudioDeviceSetup reussi, ou les combos = actual apres echec).
+            inputDeviceBox_.setText(inName, juce::dontSendNotification);
+        }
+    }
+
+    // Re-verification apres pairing (le pairing peut avoir aligne les deux combos
+    // sur l'etat courant sans necessite de changer le peripherique).
     if (outName == setup.outputDeviceName && inName == setup.inputDeviceName) {
         return;
     }
 
     setup.outputDeviceName = outName;
     setup.inputDeviceName = inName;
-    // On laisse Oboe renegocier debit/buffer (sinon forcer une taille peut rouvrir
-    // le peripherique en sortie seule -> perte du micro, cf. note de setAudioChannels).
     setup.sampleRate = 0;
     setup.bufferSize = 0;
     setup.useDefaultInputChannels = true;
     setup.useDefaultOutputChannels = true;
 
+    juce::Logger::writeToLog("Tentative peripherique -> sortie='" + outName + "' entree='" +
+                              inName + "'");
     const auto err = deviceManager.setAudioDeviceSetup(setup, true);
     if (err.isNotEmpty()) {
-        juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err + "'");
+        // Echec (ex. split USB refuse par Oboe). On aligne les combos sur le
+        // peripherique ACTUELLEMENT ouvert. Quand l'onChange async de ces setText
+        // rechecke l'invariant, out==setup.out && in==setup.in → retour immediat.
+        const auto actual = deviceManager.getAudioDeviceSetup();
+        juce::Logger::writeToLog("Peripherique audio : ERREUR '" + err +
+                                 "' -> retour sur '" + actual.outputDeviceName + "'");
+        outputDeviceBox_.setText(actual.outputDeviceName, juce::dontSendNotification);
+        inputDeviceBox_.setText(actual.inputDeviceName, juce::dontSendNotification);
     } else {
-        juce::Logger::writeToLog("Peripherique audio -> sortie='" + outName + "' entree='" +
-                                 inName + "'");
+        const auto actual = deviceManager.getAudioDeviceSetup();
+        juce::Logger::writeToLog("Peripherique audio -> sortie='" +
+                                 actual.outputDeviceName + "' entree='" +
+                                 actual.inputDeviceName + "'");
     }
 }
 
