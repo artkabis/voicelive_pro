@@ -1715,8 +1715,11 @@ void MainComponent::refreshDeviceList() {
         juce::StringArray splitInputNames;
         splitInputNames.add(kAudioRecordItem);
         splitInputNames.addArray(type->getDeviceNames(true));
-        const juce::String currentIn =
-            inputDeviceBox_.getText().isEmpty() ? kAudioRecordItem : inputDeviceBox_.getText();
+        // Toujours forcer "Micro telephone (AudioRecord)" en mode split : les async
+        // updates JUCE 8 peuvent avoir derive la combo vers un peripherique JUCE
+        // integre depuis le dernier tick ; on ecrase systematiquement pour eviter
+        // qu'un onChange suivant ne declenche applyDeviceSelection(cross-HAL).
+        const juce::String currentIn = kAudioRecordItem;
         fill(inputDeviceBox_, splitInputNames, currentIn);
     } else {
         fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
@@ -1927,31 +1930,24 @@ void MainComponent::applyDeviceSelection() {
                 return;
             VLOG("applyDeviceSelection (split+AudioRecord): JUCE duplex sortie='" + outName + "'");
         } else {
-            // L'utilisateur a choisi une vraie entree JUCE en mode split : JUCE gere
-            // les deux directions, on arrete AudioRecord. Si entree integree + sortie
-            // USB (cross-HAL), Oboe peut geler ; le watchdog est actif (micCapture arrete).
-            if (micCapture_.isRunning()) {
-                micCapture_.stop();
-                juce::Logger::writeToLog(
-                    "applyDeviceSelection (split+JUCE input): arret AudioRecord");
+            // La combo entree a derive vers un peripherique JUCE (async updates JUCE 8),
+            // pas un choix explicite utilisateur. En mode split, sortie USB + entree JUCE
+            // integree = cross-HAL → freeze Oboe:236 garanti sur Samsung A26. On restore
+            // "Micro telephone (AudioRecord)" et on relance AudioRecord si necessaire.
+            juce::Logger::writeToLog(
+                "applyDeviceSelection (split): derive combo in='" +
+                inputDeviceBox_.getText() + "' -> restaure AudioRecord");
+            inputDeviceBox_.setText("Micro telephone (AudioRecord)", juce::dontSendNotification);
+            if (!micCapture_.isRunning()) {
+                if (micCapture_.start(static_cast<int>(sampleRate_)))
+                    juce::Logger::writeToLog(
+                        "applyDeviceSelection (split): AudioRecord relance " +
+                        juce::String(static_cast<int>(sampleRate_)) + " Hz");
+                else
+                    juce::Logger::writeToLog(
+                        "applyDeviceSelection (split): AudioRecord echoue au relancement");
             }
-            inName = inputDeviceBox_.getText();
-            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
-                return;
-
-            // Same-HAL pairing si l'entree choisie est le meme peripherique que la sortie.
-            {
-                auto* type = deviceManager.getCurrentDeviceTypeObject();
-                const juce::StringArray inputNames = type->getDeviceNames(true);
-                if (inputNames.contains(outName) && inName != outName) {
-                    inName = outName;
-                    inputDeviceBox_.setText(inName, juce::dontSendNotification);
-                }
-            }
-            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
-                return;
-            VLOG("applyDeviceSelection (split+JUCE input): sortie='" + outName + "' entree='" +
-                 inName + "'");
+            return;
         }
     } else {
         inName = inputDeviceBox_.getText();
