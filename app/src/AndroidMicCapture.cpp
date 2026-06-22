@@ -40,6 +40,65 @@ int AndroidMicCapture::readSamples(float* dst, int count) noexcept {
 
 #if JUCE_ANDROID
 
+// Cherche le premier AudioDeviceInfo de type TYPE_BUILTIN_MIC (15) parmi les
+// peripheriques d'entree. Retourne une local-ref JNI (appelant doit DeleteLocalRef),
+// ou nullptr si introuvable / API indisponible. Ne leve jamais d'exception JNI.
+static jobject findBuiltinMicDevice(JNIEnv* env) noexcept {
+    env->ExceptionClear();
+
+    // ActivityThread.currentApplication() → Application (sous-type de Context).
+    // API interne Android stable depuis API 1 ; pas de Context passe en parametre requis.
+    jclass atClass = env->FindClass("android/app/ActivityThread");
+    if (atClass == nullptr) { env->ExceptionClear(); return nullptr; }
+    jmethodID curApp = env->GetStaticMethodID(atClass, "currentApplication",
+                                               "()Landroid/app/Application;");
+    if (curApp == nullptr) { env->ExceptionClear(); env->DeleteLocalRef(atClass); return nullptr; }
+    jobject context = env->CallStaticObjectMethod(atClass, curApp);
+    env->DeleteLocalRef(atClass);
+    if (context == nullptr || env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+
+    // context.getSystemService("audio") → AudioManager
+    jclass ctxCls = env->GetObjectClass(context);
+    jmethodID getSvc = env->GetMethodID(ctxCls, "getSystemService",
+                                         "(Ljava/lang/String;)Ljava/lang/Object;");
+    env->DeleteLocalRef(ctxCls);
+    if (getSvc == nullptr) { env->ExceptionClear(); env->DeleteLocalRef(context); return nullptr; }
+    jstring audioKey = env->NewStringUTF("audio");
+    jobject am = env->CallObjectMethod(context, getSvc, audioKey);
+    env->DeleteLocalRef(audioKey);
+    env->DeleteLocalRef(context);
+    if (am == nullptr || env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+
+    // am.getDevices(GET_DEVICES_INPUTS=2) → AudioDeviceInfo[]
+    jclass amCls = env->GetObjectClass(am);
+    jmethodID getDevs = env->GetMethodID(amCls, "getDevices",
+                                          "(I)[Landroid/media/AudioDeviceInfo;");
+    env->DeleteLocalRef(amCls);
+    if (getDevs == nullptr) { env->ExceptionClear(); env->DeleteLocalRef(am); return nullptr; }
+    auto* devArr = (jobjectArray)env->CallObjectMethod(am, getDevs, (jint)2);
+    env->DeleteLocalRef(am);
+    if (devArr == nullptr || env->ExceptionCheck()) { env->ExceptionClear(); return nullptr; }
+
+    // Parcourir et trouver TYPE_BUILTIN_MIC = 15
+    jobject found = nullptr;
+    const jint len = env->GetArrayLength(devArr);
+    for (jint i = 0; i < len && found == nullptr; ++i) {
+        jobject dev = env->GetObjectArrayElement(devArr, i);
+        if (dev == nullptr) continue;
+        jclass devCls = env->GetObjectClass(dev);
+        jmethodID getType = env->GetMethodID(devCls, "getType", "()I");
+        env->DeleteLocalRef(devCls);
+        if (getType != nullptr && env->CallIntMethod(dev, getType) == 15 /*TYPE_BUILTIN_MIC*/) {
+            found = dev;
+        } else {
+            env->DeleteLocalRef(dev);
+        }
+        env->ExceptionClear();
+    }
+    env->DeleteLocalRef(devArr);
+    return found;  // local-ref ou nullptr ; appelant doit DeleteLocalRef si non-null
+}
+
 void AndroidMicCapture::captureLoop() noexcept {
     JNIEnv* env = nullptr;
     if (jvm_->AttachCurrentThread(&env, nullptr) != JNI_OK || env == nullptr) {
@@ -178,6 +237,33 @@ bool AndroidMicCapture::start(int sampleRate) noexcept {
                 env->DeleteLocalRef(localAr);
                 return false;
             }
+        }
+    }
+
+    // Forcer le micro integre physique comme source de capture.
+    // AUDIO_SOURCE_MIC peut etre route vers le micro USB quand un casque USB est
+    // l'interface de sortie active (politique audio Android). Sur Samsung A26,
+    // "SM-A266B built-in microphone" est le vrai micro du telephone ; setPreferredDevice
+    // avec TYPE_BUILTIN_MIC garantit la capture sur ce peripherique, independamment
+    // du routage audio. Non bloquant : en cas d'echec on continue avec le defaut.
+    {
+        jclass cls = env->GetObjectClass(localAr);
+        jmethodID setPref = env->GetMethodID(cls, "setPreferredDevice",
+                                              "(Landroid/media/AudioDeviceInfo;)Z");
+        env->DeleteLocalRef(cls);
+        if (setPref != nullptr) {
+            jobject builtinMic = findBuiltinMicDevice(env);
+            if (builtinMic != nullptr) {
+                const jboolean ok = env->CallBooleanMethod(localAr, setPref, builtinMic);
+                env->ExceptionClear();
+                env->DeleteLocalRef(builtinMic);
+                VLMIC_I("start: setPreferredDevice(TYPE_BUILTIN_MIC)=%s", ok ? "OK" : "echec");
+            } else {
+                VLMIC_I("start: TYPE_BUILTIN_MIC introuvable, AUDIO_SOURCE_MIC par defaut");
+            }
+        } else {
+            env->ExceptionClear();
+            VLMIC_I("start: setPreferredDevice() indisponible (API<23?), AUDIO_SOURCE_MIC par defaut");
         }
     }
 
