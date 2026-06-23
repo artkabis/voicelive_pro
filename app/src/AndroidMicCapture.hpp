@@ -19,8 +19,10 @@ namespace voicelive::app {
 // La capture est completement independante de JUCE/Oboe : deux HALs distincts,
 // aucune session partagee. Cela permet d'avoir :
 //   - Sortie  : casque USB (stream Oboe gere par JUCE, setAudioChannels(2,0))
-//   - Entree  : micro integre (AudioRecord, AUDIO_SOURCE_MIC = toujours le micro
-//               physique du telephone, meme quand un casque USB est branche)
+//   - Entree  : micro integre (AudioRecord + setPreferredDevice(TYPE_BUILTIN_MIC)).
+//               Sur Samsung A26 (et quand USB audio est actif), Android peut router
+//               AUDIO_SOURCE_MIC vers le micro USB ; setPreferredDevice force
+//               explicitement le micro integre du telephone.
 //
 // Threading :
 //   Producteur   = thread de capture (background natif attache a la JVM)

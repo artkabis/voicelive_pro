@@ -18,8 +18,15 @@ le casque USB et le micro intégré sont sur deux HALs distincts, d'où le
 Solution : **`AndroidMicCapture`** capture le micro intégré via
 `android.media.AudioRecord` (JNI, `AUDIO_SOURCE_MIC` → toujours le micro
 physique même casque USB branché), **indépendamment** de JUCE/Oboe. En mode
-split : `setAudioChannels(2, 0)` → Oboe n'ouvre qu'un flux **de sortie** vers
-le casque USB, sans conflit de HAL.
+split, JUCE reste en **duplex (2,2)** sur le chemin éprouvé (sortie casque
+fonctionnelle en mode normal) et AudioRecord capture le micro téléphone **en
+parallèle** (deux sessions, deux HALs). L'entrée JUCE (micro casque) est
+ignorée dans `getNextAudioBlock`.
+> ⚠️ Première tentative en **sortie seule** (`setAudioChannels(2,0)`) abandonnée :
+> Oboe ne maintient pas un flux output-only sur l'appareil testé (jassert
+> `juce_Oboe_android.cpp:484`, callback gelé → FIFO jamais drainé → drops
+> massifs). Le watchdog est aussi **neutralisé en mode split** (son fallback
+> `setAudioChannels(2,2)` réinitialisait l'output vers le périphérique par défaut).
 - Thread de capture (producteur) → `getNextAudioBlock` (consommateur) via une
   file SPSC lock-free **`SampleFifo`** (transfert par blocs, ~341 ms de marge).
 - `prepareToPlay()` redémarre `AndroidMicCapture` à chaque changement de

@@ -22,23 +22,29 @@ public:
 
     /// Déposé par le producteur. Renvoie false si plein (jamais bloquant).
     bool push(const T& item) noexcept {
+        // relaxed : seul ce thread écrit head_ ; on n'a pas besoin de synchronisation ici.
         const std::size_t head = head_.load(std::memory_order_relaxed);
         const std::size_t next = increment(head, slots_.size());
+        // acquire : s'assure de voir le dernier tail_ écrit par le consommateur.
         if (next == tail_.load(std::memory_order_acquire)) {
             return false;  // plein
         }
         slots_[head] = item;
+        // release : rend l'écriture dans slots_[head] visible avant la mise à jour de head_.
         head_.store(next, std::memory_order_release);
         return true;
     }
 
     /// Retiré par le consommateur (thread audio). Renvoie false si vide.
     bool pop(T& out) noexcept {
+        // relaxed : seul ce thread écrit tail_.
         const std::size_t tail = tail_.load(std::memory_order_relaxed);
+        // acquire : garantit la visibilité de slots_[tail] écrit par le producteur.
         if (tail == head_.load(std::memory_order_acquire)) {
             return false;  // vide
         }
         out = slots_[tail];
+        // release : rend la libération de la case visible au producteur.
         tail_.store(increment(tail, slots_.size()), std::memory_order_release);
         return true;
     }
@@ -55,6 +61,8 @@ private:
     }
 
     std::vector<T> slots_;
+    // Invariant SPSC : head_ est lu+écrit par le producteur seul, tail_ par le consommateur seul.
+    // Chacun lit l'index de l'autre avec acquire pour établir la happens-before.
     std::atomic<std::size_t> head_{0};  // écrit par le producteur
     std::atomic<std::size_t> tail_{0};  // écrit par le consommateur
 };

@@ -27,6 +27,8 @@ const char* name(int midi) noexcept {
 }
 
 int octave(int midi) noexcept {
+    // Division plancher pour les MIDI négatifs : en C++, -1/12 == 0 (tronqué vers 0),
+    // mais on veut -1 → on soustrait 11 avant de diviser (équivalent floor division).
     const int floored = (midi >= 0) ? (midi / 12) : ((midi - 11) / 12);
     return floored - 1;  // MIDI 69 (La) → octave 4
 }

@@ -27,6 +27,7 @@
 #include <span>
 #include <vector>
 
+#include "AndroidAudioOutput.hpp"
 #include "AndroidMicCapture.hpp"
 #include "HeadphoneMonitor.h"
 #include "voicelive/dsp/BpmDetector.hpp"
@@ -59,8 +60,8 @@ public:
 
 private:
     static constexpr std::size_t kTrackCount = 3;
-    static constexpr int kMaxChannels = 8;
-    static constexpr std::size_t kAnalysisSize = 4096;
+    static constexpr int kMaxChannels = 8;  ///< Canaux max tolérés en entrée/sortie JUCE.
+    static constexpr std::size_t kAnalysisSize = 4096;  ///< Fenêtre glissante (accordeur + FFT).
 
     /// Controles d'une piste.
     struct TrackStrip {
@@ -106,13 +107,14 @@ private:
         // Fenetre de zoom : portion de la boucle affichee ([0,1] = pas de zoom).
         float viewStart_ = 0.0F;
         float viewEnd_ = 1.0F;
-        // Peak cache: rebuilt when loopLength, width, or zoom window changes.
+        // Cache de pics par pixel : évite de relire tous les échantillons à chaque repaint().
+        // Invalidé si loopLength, largeur de composant ou fenêtre de zoom changent.
         mutable std::vector<float> peakCache_;
         mutable std::size_t cachedLoopLength_ = 0;
         mutable int cachedWidth_ = 0;
         mutable float cachedViewStart_ = -1.0F;
         mutable float cachedViewEnd_ = -1.0F;
-        // Playhead (message thread only)
+        // Tête de lecture (thread message uniquement, mis à jour par timerCallback).
         std::size_t playheadPos_ = 0;
         std::size_t playheadLen_ = 0;
         double playheadSr_ = 48000.0;
@@ -163,8 +165,8 @@ private:
     void timerCallback() override;
     void changeListenerCallback(juce::ChangeBroadcaster* source) override;
     void updateDiagnostics();
-    void refreshDeviceList();     ///< met a jour les listes de peripheriques (sortie/entree)
-    void applyDeviceSelection();  ///< applique le choix via setAudioDeviceSetup (routage Oboe)
+    void refreshDeviceList();          ///< met a jour les listes de peripheriques (sortie/entree)
+    void applyDeviceSelection();       ///< applique le choix via setAudioDeviceSetup (routage Oboe)
     void applySplitMicMode(int mode);  ///< 1=normal, 2=split (USB sortie + micro telephone)
 
     // --- Transport global ---------------------------------------------------
@@ -197,10 +199,13 @@ private:
     public:
         void logMessage(const juce::String& message) override;
         [[nodiscard]] juce::String snapshot() const;
+        void setLevel(int level) noexcept { level_.store(level, std::memory_order_relaxed); }
+        void clear();
 
     private:
         juce::CriticalSection lock_;
         juce::StringArray lines_;
+        std::atomic<int> level_{2};
     };
 
     AppLogger appLogger_;
@@ -209,7 +214,11 @@ private:
     voicelive::dsp::Equalizer* masterEq_ = nullptr;  // possede par masterChain_
 
     voicelive::app::AndroidMicCapture micCapture_;
+    voicelive::app::AndroidAudioOutput androidAudioOutput_;
     bool splitMicMode_{false};
+    bool splitModeAutoActivated_{false};      ///< split active automatiquement au hotplug USB
+    bool prevHeadphoneConnected_{false};      ///< etat casque lors du dernier poll
+    std::atomic<int> logLevel_{2};  ///< 0=off 1=succinct 2=complet — zero cout si 0
 
     voicelive::app::HeadphoneMonitor headphoneMonitor_;
     voicelive::app::HeadphoneLed headphoneLed_;
@@ -227,12 +236,12 @@ private:
     // Watchdog audio (thread UI only) : detecte un callback audio fige (ex. echec
     // de reroutage Oboe au branchement USB-C) et relance le peripherique. La relance
     // est non destructive : prepareToPlay() conserve les pistes (cf. reconfigure()).
-    std::uint64_t lastSeenBlocks_ = 0;  ///< dernier compteur de blocs moteur observe
-    int audioStaleTicks_ = 0;           ///< ticks consecutifs sans nouveau bloc
-    int restartCooldownTicks_ = 0;      ///< ticks restants avant relance autorisee
-    bool audioWasAlive_ = false;        ///< vrai des qu'au moins un bloc a ete vu
-    int watchdogStartupAttempts_ = 0;   ///< tentatives de demarrage echouees (cas 2)
-    int watchdogRestartAttempts_ = 0;   ///< tentatives de relance apres freeze (cas 1)
+    std::uint64_t lastSeenBlocks_ = 0;     ///< dernier compteur de blocs moteur observe
+    int audioStaleTicks_ = 0;              ///< ticks consecutifs sans nouveau bloc
+    int restartCooldownTicks_ = 0;         ///< ticks restants avant relance autorisee
+    bool audioWasAlive_ = false;           ///< vrai des qu'au moins un bloc a ete vu
+    int watchdogStartupAttempts_ = 0;      ///< tentatives de demarrage echouees (cas 2)
+    int watchdogRestartAttempts_ = 0;      ///< tentatives de relance apres freeze (cas 1)
     bool isRefreshingDeviceList_ = false;  ///< guard: empeche applyDeviceSelection pendant fill
 
     double sampleRate_ = 48000.0;
@@ -329,6 +338,10 @@ private:
     juce::Viewport logViewport_;
     juce::TextEditor diagView_;
     juce::TextButton copyButton_;
+    juce::TextButton resetLogsBtn_;
+    juce::ToggleButton logCompletBtn_;   ///< niveau 2 : logs complets
+    juce::ToggleButton logSuccinctBtn_;  ///< niveau 1 : logs succincts
+    juce::ToggleButton logOffBtn_;       ///< niveau 0 : pas de generation de logs
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };

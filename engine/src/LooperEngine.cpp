@@ -121,6 +121,8 @@ core::Status LooperEngine::importTrack(std::size_t index, const wav::AudioData& 
     const std::size_t frames = audio.frameCount();
     std::vector<float> mono(frames, 0.0F);
     const auto channels = static_cast<float>(audio.channels);
+    // Les échantillons WAV sont entrelacés : [L0, R0, L1, R1, ...].
+    // On somme les canaux de chaque trame et on normalise pour obtenir le mono.
     for (std::size_t frame = 0; frame < frames; ++frame) {
         float sum = 0.0F;
         for (unsigned channel = 0; channel < audio.channels; ++channel) {

@@ -36,19 +36,20 @@
 namespace voicelive::engine {
 
 /// Commande de contrôle, transmissible via la file lock-free.
+/// Chaque commande est produite sur le thread UI et consommée sur le thread audio.
 struct EngineCommand {
     enum class Action : std::uint8_t {
-        Record,
-        FinishRecording,
-        Play,
-        Stop,
-        StartOverdub,
-        StopOverdub,
-        Clear,
-        SetGain,
-        SetMuted,
-        SelectTrack,
-        Seek,  ///< Deplace la tete de lecture : position en echantillons (champ position).
+        Record,           ///< Empty → Recording.
+        FinishRecording,  ///< Recording → Playing (fige la boucle).
+        Play,             ///< Stopped → Playing.
+        Stop,             ///< {Recording, Playing, Overdubbing} → Stopped.
+        StartOverdub,     ///< Playing → Overdubbing.
+        StopOverdub,      ///< Overdubbing → Playing.
+        Clear,            ///< Tout état → Empty (efface le contenu).
+        SetGain,          ///< Champ `gain` utilisé.
+        SetMuted,         ///< Champ `muted` utilisé.
+        SelectTrack,      ///< Sélectionne la piste active (champ `track`).
+        Seek,  ///< Déplace la tête de lecture : position en échantillons (champ `position`).
     };
 
     Action action = Action::Stop;
@@ -59,11 +60,13 @@ struct EngineCommand {
 };
 
 /// Instantané d'état du moteur, pour le diagnostic (panneau Diag de l'app).
+/// Toutes les valeurs sont lues avec memory_order_relaxed : cohérence à la louche,
+/// suffisante pour l'affichage ; aucune décision temps-critique ne s'y appuie.
 struct Diagnostics {
     unsigned sampleRate = 0;
     std::size_t trackCount = 0;
     std::uint64_t blocksProcessed = 0;
-    std::uint32_t droppedCommands = 0;  // file pleine : commandes UI perdues
+    std::uint32_t droppedCommands = 0;  ///< Commandes UI perdues (file pleine).
     bool metronomeEnabled = false;
     std::size_t masterEffectCount = 0;
 };

@@ -20,6 +20,10 @@
             file="app/src/AndroidMicCapture.hpp"/>
       <FILE id="appMicC" name="AndroidMicCapture.cpp" compile="1" resource="0"
             file="app/src/AndroidMicCapture.cpp"/>
+      <FILE id="appOutH" name="AndroidAudioOutput.hpp" compile="0" resource="0"
+            file="app/src/AndroidAudioOutput.hpp"/>
+      <FILE id="appOutC" name="AndroidAudioOutput.cpp" compile="1" resource="0"
+            file="app/src/AndroidAudioOutput.cpp"/>
     </GROUP>
     <GROUP id="grpCore" name="core">
       <FILE id="coreLoop" name="LooperTrack.cpp" compile="1" resource="0"

@@ -24,6 +24,7 @@ std::size_t Transport::chooseLoopMultiple(std::size_t recorded, std::size_t refe
         return recorded;
     }
 
+    // Multiples musicaux supportés : de ¼ boucle (fill) à 4× (pont long).
     constexpr std::array<double, 5> kMultiples{0.25, 0.5, 1.0, 2.0, 4.0};
     const auto recordedF = static_cast<double>(recorded);
     const auto referenceF = static_cast<double>(reference);

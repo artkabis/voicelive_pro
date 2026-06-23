@@ -42,6 +42,15 @@ public:
     /// ChangeListener de l'AudioDeviceManager.
     void poll(juce::AudioDeviceManager& mgr) noexcept;
 
+    /// Vrai si le peripherique detecte est USB audio (types 11=USB_DEVICE,
+    /// 12=USB_ACCESSORY, 22=USB_HEADSET). Ces types declenchent Oboe:517 en
+    /// duplex → activer le mode split pour eviter le freeze.
+    /// Thread-safe (atomic).
+    [[nodiscard]] bool isUsbAudioConnected() const noexcept {
+        const int t = diagFoundType_.load(std::memory_order_acquire);
+        return t == 11 || t == 12 || t == 22;
+    }
+
     /// Ligne de diagnostic lisible (affichee dans le panneau Diag) expliquant
     /// le resultat de la derniere detection : utile car sur Android la detection
     /// passe par JNI et peut echouer silencieusement (contexte null, etc.).
@@ -61,7 +70,7 @@ private:
     std::atomic<int> diagOutputCount_{0};  // nb de peripheriques de sortie vus
     // Packed: bits[3:0]=count, bits[9:4]=type[0], bits[15:10]=type[1], ..., 6 bits/type, max 10.
     std::atomic<std::int64_t> diagAllTypes_{0};
-    std::atomic<int> diagFoundType_{-1};   // type qui a declenche found=true, -1 si absent
+    std::atomic<int> diagFoundType_{-1};  // type qui a declenche found=true, -1 si absent
 };
 
 }  // namespace voicelive::app
