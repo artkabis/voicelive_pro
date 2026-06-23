@@ -36,11 +36,11 @@ using voicelive::core::SampleRate;
 using voicelive::core::TrackState;
 using voicelive::engine::EngineCommand;
 
-// Log detaille peripherique : zero cout quand verboseLogging_ est faux —
+// Log detaille peripherique : zero cout quand logLevel_ < 2 —
 // la chaine n'est jamais construite car elle est dans le corps du if.
 // clang-format off
 // NOLINTNEXTLINE(cppcoreguidelines-macro-usage)
-#define VLOG(msg) do { if (verboseLogging_.load(std::memory_order_relaxed)) juce::Logger::writeToLog(msg); } while (0)  // NOLINT
+#define VLOG(msg) do { if (logLevel_.load(std::memory_order_relaxed) >= 2) juce::Logger::writeToLog(msg); } while (0)  // NOLINT
 // clang-format on
 
 namespace {
@@ -420,6 +420,7 @@ void MainComponent::SpectrumView::paint(juce::Graphics& g) {
 // ─── AppLogger ────────────────────────────────────────────────────────────────
 
 void MainComponent::AppLogger::logMessage(const juce::String& message) {
+    if (level_.load(std::memory_order_relaxed) == 0) return;
     {
         const juce::ScopedLock scoped(lock_);
         lines_.add(message);
@@ -433,6 +434,11 @@ void MainComponent::AppLogger::logMessage(const juce::String& message) {
 juce::String MainComponent::AppLogger::snapshot() const {
     const juce::ScopedLock scoped(lock_);
     return lines_.joinIntoString("\n");
+}
+
+void MainComponent::AppLogger::clear() {
+    const juce::ScopedLock scoped(lock_);
+    lines_.clear();
 }
 
 // ─── MainComponent ────────────────────────────────────────────────────────────
@@ -735,14 +741,46 @@ MainComponent::MainComponent() {
     };
     contentPane_.addAndMakeVisible(copyButton_);
 
-    verboseLogToggle_.setButtonText("Logs verbeux");
-    verboseLogToggle_.setToggleState(true, juce::dontSendNotification);
-    verboseLogToggle_.onStateChange = [this] {
-        const bool on = verboseLogToggle_.getToggleState();
-        verboseLogging_.store(on, std::memory_order_relaxed);
-        juce::Logger::writeToLog(juce::String("Logs verbeux: ") + (on ? "actives" : "desactives"));
+    resetLogsBtn_.setButtonText("Reset logs");
+    resetLogsBtn_.onClick = [this] {
+        appLogger_.clear();
+        diagView_.clear();
     };
-    contentPane_.addAndMakeVisible(verboseLogToggle_);
+    contentPane_.addAndMakeVisible(resetLogsBtn_);
+
+    // Groupe radio niveau de log (0=Off 1=Succinct 2=Complet).
+    logCompletBtn_.setButtonText("Complet");
+    logCompletBtn_.setRadioGroupId(1);
+    logCompletBtn_.setClickingTogglesState(true);
+    logCompletBtn_.setToggleState(true, juce::dontSendNotification);
+    logCompletBtn_.onStateChange = [this] {
+        if (!logCompletBtn_.getToggleState()) return;
+        logLevel_.store(2, std::memory_order_relaxed);
+        appLogger_.setLevel(2);
+        juce::Logger::writeToLog("Logs: Complet");
+    };
+    contentPane_.addAndMakeVisible(logCompletBtn_);
+
+    logSuccinctBtn_.setButtonText("Succinct");
+    logSuccinctBtn_.setRadioGroupId(1);
+    logSuccinctBtn_.setClickingTogglesState(true);
+    logSuccinctBtn_.onStateChange = [this] {
+        if (!logSuccinctBtn_.getToggleState()) return;
+        logLevel_.store(1, std::memory_order_relaxed);
+        appLogger_.setLevel(1);
+        juce::Logger::writeToLog("Logs: Succinct");
+    };
+    contentPane_.addAndMakeVisible(logSuccinctBtn_);
+
+    logOffBtn_.setButtonText("Off");
+    logOffBtn_.setRadioGroupId(1);
+    logOffBtn_.setClickingTogglesState(true);
+    logOffBtn_.onStateChange = [this] {
+        if (!logOffBtn_.getToggleState()) return;
+        logLevel_.store(0, std::memory_order_relaxed);
+        appLogger_.setLevel(0);
+    };
+    contentPane_.addAndMakeVisible(logOffBtn_);
 
     analysis_.assign(kAnalysisSize, 0.0F);
     setSize(400, 800);
@@ -2120,7 +2158,7 @@ void MainComponent::resized() {
                        3 * (kEqRowH + 4) + kGap + kSpecH + kGap + kMixLblH + 4 + kEditRowH + 4 +
                        kMixWaveH + 4 + kMixEditH + kGap + kAudioLblH + 4 + kAudioRowH + 4 +
                        kAudioRowH + 4 + kAudioRowH + kGap + kIoLblH + 4 + kIoRowH + kGap + kCopyH +
-                       kGap / 2 + kDiagH + pad;
+                       4 + kCopyH + kGap / 2 + kDiagH + pad;
 
     contentPane_.setSize(usableW, totalH);
     auto area = contentPane_.getLocalBounds().reduced(pad);
@@ -2353,8 +2391,16 @@ void MainComponent::resized() {
     area.removeFromTop(kGap);
     {
         auto row = area.removeFromTop(kCopyH);
-        copyButton_.setBounds(row.removeFromLeft(row.getWidth() * 3 / 5).reduced(2));
-        verboseLogToggle_.setBounds(row.reduced(2));
+        copyButton_.setBounds(row.removeFromLeft(row.getWidth() / 2).reduced(2));
+        resetLogsBtn_.setBounds(row.reduced(2));
+    }
+    area.removeFromTop(4);
+    {
+        auto row = area.removeFromTop(kCopyH);
+        const int third = row.getWidth() / 3;
+        logCompletBtn_.setBounds(row.removeFromLeft(third).reduced(2));
+        logSuccinctBtn_.setBounds(row.removeFromLeft(third).reduced(2));
+        logOffBtn_.setBounds(row.reduced(2));
     }
     area.removeFromTop(kGap / 2);
     {

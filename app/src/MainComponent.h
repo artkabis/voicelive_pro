@@ -199,10 +199,13 @@ private:
     public:
         void logMessage(const juce::String& message) override;
         [[nodiscard]] juce::String snapshot() const;
+        void setLevel(int level) noexcept { level_.store(level, std::memory_order_relaxed); }
+        void clear();
 
     private:
         juce::CriticalSection lock_;
         juce::StringArray lines_;
+        std::atomic<int> level_{2};
     };
 
     AppLogger appLogger_;
@@ -215,7 +218,7 @@ private:
     bool splitMicMode_{false};
     bool splitModeAutoActivated_{false};      ///< split active automatiquement au hotplug USB
     bool prevHeadphoneConnected_{false};      ///< etat casque lors du dernier poll
-    std::atomic<bool> verboseLogging_{true};  ///< logs detailles peripheriques — zero cout si faux
+    std::atomic<int> logLevel_{2};  ///< 0=off 1=succinct 2=complet — zero cout si 0
 
     voicelive::app::HeadphoneMonitor headphoneMonitor_;
     voicelive::app::HeadphoneLed headphoneLed_;
@@ -335,7 +338,10 @@ private:
     juce::Viewport logViewport_;
     juce::TextEditor diagView_;
     juce::TextButton copyButton_;
-    juce::ToggleButton verboseLogToggle_;  ///< interrupteur logs verbeux (zero cout si desactive)
+    juce::TextButton resetLogsBtn_;
+    juce::ToggleButton logCompletBtn_;   ///< niveau 2 : logs complets
+    juce::ToggleButton logSuccinctBtn_;  ///< niveau 1 : logs succincts
+    juce::ToggleButton logOffBtn_;       ///< niveau 0 : pas de generation de logs
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(MainComponent)
 };
