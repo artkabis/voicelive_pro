@@ -1715,11 +1715,16 @@ void MainComponent::refreshDeviceList() {
         juce::StringArray splitInputNames;
         splitInputNames.add(kAudioRecordItem);
         splitInputNames.addArray(type->getDeviceNames(true));
-        // Toujours forcer "Micro telephone (AudioRecord)" en mode split : les async
-        // updates JUCE 8 peuvent avoir derive la combo vers un peripherique JUCE
-        // integre depuis le dernier tick ; on ecrase systematiquement pour eviter
-        // qu'un onChange suivant ne declenche applyDeviceSelection(cross-HAL).
-        const juce::String currentIn = kAudioRecordItem;
+        // Si AudioRecord est actif → conserver "Micro telephone (AudioRecord)" comme
+        // selection courante (previent les derives des async updates JUCE 8 pendant
+        // que le stream USB duplex est vivant et stable).
+        // Si AudioRecord est arrete → l'utilisateur a choisi une entree JUCE ; on
+        // preserve son choix pour ne pas l'ecraser toutes les 10 s.
+        const juce::String currentIn =
+            micCapture_.isRunning()
+                ? kAudioRecordItem
+                : (inputDeviceBox_.getText().isEmpty() ? kAudioRecordItem
+                                                       : inputDeviceBox_.getText());
         fill(inputDeviceBox_, splitInputNames, currentIn);
     } else {
         fill(inputDeviceBox_, type->getDeviceNames(true), setup.inputDeviceName);
@@ -1763,49 +1768,45 @@ void MainComponent::applySplitMicMode(int mode) {
 
     if (wantSplit) {
         splitMicMode_ = true;
-        // On garde JUCE en DUPLEX (2,2) : sur cet appareil Oboe ne maintient pas un
-        // flux output-only (jassert :484, callback gele -> drops massifs). JUCE est
-        // bascule sur le casque USB en duplex (sortie+entree meme HAL, voir lambda
-        // ci-dessous) et capte le micro TELEPHONE en parallele via AudioRecord.
-        // L'entree USB de JUCE est simplement ignoree dans getNextAudioBlock.
-        // Le watchdog est neutralise en split+AudioRecord (cf. timerCallback) le temps
-        // que la bascule USB + le demarrage AudioRecord se stabilisent.
-        //
+        // Prevenir l'interference du watchdog : le watchdog peut avoir declenche
+        // restartLastAudioDevice() sur le tick precedent (audio stale pendant le
+        // branchement USB). Cet appel rouvre System Default en cross-HAL (USB out +
+        // integre in) → jassert :517 → Oboe corrompu → callbacks USB duplex morts.
+        // On arrete le compteur et on impose un cooldown pour que la bascule USB
+        // puisse stabiliser Oboe avant que le watchdog ne se reenclenche.
+        audioStaleTicks_ = 0;
+        restartCooldownTicks_ = 50;  // ~16 s de protection pendant la bascule
+
         // La combo entree RESTE ACTIVEE : l'utilisateur peut voir et choisir sa source.
         // On appelle refreshDeviceList() IMMEDIATEMENT pour deux raisons :
         //   1. Ajouter "Micro telephone (AudioRecord)" comme item valide (selectedId=1)
         //      avant que les handleAsyncUpdate() JUCE 8 en attente ne restaurent le texte
         //      vers le dernier peripherique JUCE selectionne.
         //   2. Activer isRefreshingDeviceList_ pour bloquer tout onChange async entrant.
-        // Sans ce refresh immediat, un onChange de la combo en file d'attente peut voir
-        // le mauvais texte, appeler applyDeviceSelection(split+JUCE input) et arreter
-        // AudioRecord dans la seconde qui suit l'activation du mode split.
         inputDeviceBox_.setEnabled(true);
         inputDeviceBox_.setText("Micro telephone (AudioRecord)", juce::dontSendNotification);
         refreshDeviceList();  // etablit "Micro telephone" comme item selectionne + guard
 
-        // Strategie split (validee sur Samsung A26 + HyperX Cloud III) :
-        //   - JUCE ouvre le casque USB en DUPLEX (sortie USB + entree USB, MEME HAL).
-        //     C'est la seule config Oboe stable sur ce materiel : les peripheriques
-        //     integres nommes ("built-in speaker"...) ne sont PAS ouvrables ("No such
-        //     device"), et le duplex cross-HAL (USB out + integre in) gele (Oboe:236).
-        //   - JUCE pilote le moteur et SORT le son vers l'USB directement (pas d'AudioTrack).
-        //   - L'entree USB de JUCE est IGNOREE dans getNextAudioBlock ; AudioRecord
-        //     capte le micro INTEGRE du telephone (le vrai but du mode split).
-        // setAudioDeviceSetup() est DIFFERE (callAsync) pour eviter la reentrancee de
-        // la queue JUCE 8 : il pompe la queue pendant l'appel (timer refreshDeviceList,
-        // callAsync guards), ce qui peut corrompre isRefreshingDeviceList_.
+        // Strategie split (Samsung A26 + HyperX Cloud III) :
+        //   - JUCE ouvre le casque USB en DUPLEX (sortie+entree meme HAL). C'est la seule
+        //     config Oboe stable : les integres nommes ne sont pas ouvrables ("No such
+        //     device"), et cross-HAL (USB out + integre in) declenche Oboe:517.
+        //   - AudioRecord capte le micro INTEGRE du telephone (but du mode split).
+        //   - L'entree USB de JUCE est IGNOREE dans getNextAudioBlock.
+        // IMPORTANT : setAudioChannels(2,2) en tete du lambda efface l'etat Oboe
+        // corrompu par un eventuel restartLastAudioDevice() cross-HAL du watchdog.
+        // Sans ce reset complet, setAudioDeviceSetup(USB duplex) ouvre "OK" mais les
+        // callbacks ne demarrent jamais (stream demi-mort apres Oboe:517).
         juce::MessageManager::callAsync([this]() {
             if (!splitMicMode_)
                 return;
             auto* type = deviceManager.getCurrentDeviceTypeObject();
             if (type == nullptr)
                 return;
-            const auto curSetup = deviceManager.getAudioDeviceSetup();
 
             // Localiser le casque USB cote sortie ET entree (meme peripherique → duplex
-            // meme-HAL). On le rend explicite plutot que de dependre de "System Default"
-            // (qui peut router differemment l'entree et la sortie → cross-HAL → freeze).
+            // meme-HAL). Explicite plutot que "System Default" (qui peut router entree
+            // et sortie sur des HALs distincts → cross-HAL → Oboe:517).
             juce::String usbOut, usbIn;
             for (const auto& n : type->getDeviceNames(false))
                 if (n.containsIgnoreCase("USB")) {
@@ -1820,9 +1821,14 @@ void MainComponent::applySplitMicMode(int mode) {
 
             if (usbOut.isNotEmpty()) {
                 const juce::String wantIn = usbIn.isNotEmpty() ? usbIn : usbOut;
+                const auto curSetup = deviceManager.getAudioDeviceSetup();
                 if (curSetup.outputDeviceName != usbOut || curSetup.inputDeviceName != wantIn) {
                     isRefreshingDeviceList_ = true;
-                    auto newSetup = curSetup;
+                    // Reset Oboe complet pour effacer un eventuel etat corrompu par :517.
+                    // Sans ce reset, l'appel suivant setAudioDeviceSetup retourne "OK"
+                    // mais getNextAudioBlock n'est jamais rappele (callbacks morts).
+                    setAudioChannels(2, 2);
+                    auto newSetup = deviceManager.getAudioDeviceSetup();
                     newSetup.outputDeviceName = usbOut;
                     newSetup.inputDeviceName = wantIn;
                     newSetup.sampleRate = 0;
@@ -1930,24 +1936,31 @@ void MainComponent::applyDeviceSelection() {
                 return;
             VLOG("applyDeviceSelection (split+AudioRecord): JUCE duplex sortie='" + outName + "'");
         } else {
-            // La combo entree a derive vers un peripherique JUCE (async updates JUCE 8),
-            // pas un choix explicite utilisateur. En mode split, sortie USB + entree JUCE
-            // integree = cross-HAL → freeze Oboe:236 garanti sur Samsung A26. On restore
-            // "Micro telephone (AudioRecord)" et on relance AudioRecord si necessaire.
-            juce::Logger::writeToLog(
-                "applyDeviceSelection (split): derive combo in='" +
-                inputDeviceBox_.getText() + "' -> restaure AudioRecord");
-            inputDeviceBox_.setText("Micro telephone (AudioRecord)", juce::dontSendNotification);
-            if (!micCapture_.isRunning()) {
-                if (micCapture_.start(static_cast<int>(sampleRate_)))
-                    juce::Logger::writeToLog(
-                        "applyDeviceSelection (split): AudioRecord relance " +
-                        juce::String(static_cast<int>(sampleRate_)) + " Hz");
-                else
-                    juce::Logger::writeToLog(
-                        "applyDeviceSelection (split): AudioRecord echoue au relancement");
+            // L'utilisateur a choisi une entree JUCE en mode split. Sur Samsung A26,
+            // sortie USB + entree integree JUCE = cross-HAL → Oboe:517. Le watchdog
+            // est actif (micCapture arrete) et tentera une recuperation automatique.
+            if (micCapture_.isRunning()) {
+                micCapture_.stop();
+                juce::Logger::writeToLog(
+                    "applyDeviceSelection (split+JUCE input): arret AudioRecord");
             }
-            return;
+            inName = inputDeviceBox_.getText();
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
+                return;
+            // Same-HAL pairing : si l'entree choisie est le meme peripherique USB,
+            // on force le duplex sur cet unique HAL pour eviter le cross-HAL.
+            {
+                auto* type = deviceManager.getCurrentDeviceTypeObject();
+                const juce::StringArray inputNames = type->getDeviceNames(true);
+                if (inputNames.contains(outName) && inName != outName) {
+                    inName = outName;
+                    inputDeviceBox_.setText(inName, juce::dontSendNotification);
+                }
+            }
+            if (outName == setup.outputDeviceName && inName == setup.inputDeviceName)
+                return;
+            VLOG("applyDeviceSelection (split+JUCE input): sortie='" + outName + "' entree='" +
+                 inName + "'");
         }
     } else {
         inName = inputDeviceBox_.getText();
